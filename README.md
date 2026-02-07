@@ -176,14 +176,27 @@ cp target/release/microclaw /usr/local/bin/
 
 ### 1. Create a Telegram bot
 
-Talk to [@BotFather](https://t.me/BotFather) on Telegram:
-- `/newbot` -- follow the prompts
-- Copy the bot token
-- Note the bot username (without the `@`)
+1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
+2. Send `/newbot`
+3. Enter a display name for your bot (e.g. `My MicroClaw`)
+4. Enter a username (must end in `bot`, e.g. `my_microclaw_bot`)
+5. BotFather will reply with a token like `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` -- save this
+
+**Recommended BotFather settings** (optional but useful):
+- `/setdescription` -- set a short description shown in the bot's profile
+- `/setcommands` -- register commands so users see them in the menu:
+  ```
+  reset - Clear current session
+  skills - List available agent skills
+  ```
+- `/setprivacy` -- set to `Disable` if you want the bot to see all group messages (not just @mentions)
 
 ### 2. Get an Anthropic API key
 
-Get one at [console.anthropic.com](https://console.anthropic.com/).
+1. Go to [console.anthropic.com](https://console.anthropic.com/)
+2. Sign up or log in
+3. Navigate to **API Keys** and create a new key
+4. Copy the key (starts with `sk-ant-`)
 
 ### 3. Configure
 

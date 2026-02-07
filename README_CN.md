@@ -176,14 +176,27 @@ cp target/release/microclaw /usr/local/bin/
 
 ### 1. 创建 Telegram 机器人
 
-在 Telegram 上与 [@BotFather](https://t.me/BotFather) 对话：
-- `/newbot` -- 按提示操作
-- 复制 bot token
-- 记下 bot 用户名（不带 `@`）
+1. 打开 Telegram，搜索 [@BotFather](https://t.me/BotFather)
+2. 发送 `/newbot`
+3. 输入机器人的显示名称（例如 `My MicroClaw`）
+4. 输入用户名（必须以 `bot` 结尾，例如 `my_microclaw_bot`）
+5. BotFather 会回复一个 token，类似 `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` -- 保存好
+
+**推荐的 BotFather 设置**（可选但有用）：
+- `/setdescription` -- 设置机器人简介，显示在机器人资料页
+- `/setcommands` -- 注册命令，用户可以在菜单中看到：
+  ```
+  reset - 清除当前会话
+  skills - 查看可用技能列表
+  ```
+- `/setprivacy` -- 设置为 `Disable`，这样机器人可以看到群里所有消息（而不仅仅是 @提及）
 
 ### 2. 获取 Anthropic API Key
 
-在 [console.anthropic.com](https://console.anthropic.com/) 获取。
+1. 访问 [console.anthropic.com](https://console.anthropic.com/)
+2. 注册或登录
+3. 进入 **API Keys** 页面，创建新的 key
+4. 复制 key（以 `sk-ant-` 开头）
 
 ### 3. 配置环境变量
 
