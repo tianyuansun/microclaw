@@ -6,6 +6,7 @@ mod llm;
 mod mcp;
 mod memory;
 mod scheduler;
+mod setup;
 mod skills;
 mod telegram;
 mod tools;
@@ -13,6 +14,7 @@ mod transcribe;
 mod whatsapp;
 
 use config::Config;
+use error::MicroClawError;
 use tracing::info;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -26,6 +28,7 @@ USAGE:
 
 COMMANDS:
     start       Start the Telegram bot
+    setup       Run interactive setup wizard
     help        Show this help message
 
 FEATURES:
@@ -44,8 +47,9 @@ FEATURES:
     - WhatsApp Cloud API support
 
 SETUP:
-    1. Copy .env.example to .env
-    2. Fill in the required values:
+    1. Run: microclaw setup
+       (or run microclaw start and follow auto-setup on first launch)
+    2. Required values:
 
        TELEGRAM_BOT_TOKEN   Bot token from @BotFather
        LLM_API_KEY          API key (also accepts ANTHROPIC_API_KEY)
@@ -84,8 +88,8 @@ EXAMPLES:
     microclaw start          Start the bot
     microclaw help           Show this message
 
-AUTHOR:
-    everettjf — https://github.com/everettjf"#
+ABOUT:
+    https://microclaw.ai"#
     );
 }
 
@@ -96,6 +100,15 @@ async fn main() -> anyhow::Result<()> {
 
     match command {
         Some("start") => {}
+        Some("setup") => {
+            let saved = setup::run_setup_wizard()?;
+            if saved {
+                println!("Setup saved to .env");
+            } else {
+                println!("Setup canceled");
+            }
+            return Ok(());
+        }
         Some("help" | "--help" | "-h") | None => {
             print_help();
             return Ok(());
@@ -114,7 +127,21 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let config = Config::from_env()?;
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(MicroClawError::Config(e)) => {
+            eprintln!("Config missing/invalid: {e}");
+            eprintln!("Launching setup wizard...");
+            let saved = setup::run_setup_wizard()?;
+            if !saved {
+                return Err(anyhow::anyhow!(
+                    "setup canceled and config is still incomplete"
+                ));
+            }
+            Config::from_env()?
+        }
+        Err(e) => return Err(e.into()),
+    };
     info!("Starting MicroClaw bot...");
 
     let db = db::Database::new(&config.data_dir)?;
@@ -125,7 +152,10 @@ async fn main() -> anyhow::Result<()> {
 
     let skill_manager = skills::SkillManager::new(&config.data_dir);
     let discovered = skill_manager.discover_skills();
-    info!("Skill manager initialized ({} skills discovered)", discovered.len());
+    info!(
+        "Skill manager initialized ({} skills discovered)",
+        discovered.len()
+    );
 
     // Initialize MCP servers (optional, configured via data_dir/mcp.json)
     let mcp_config_path = std::path::Path::new(&config.data_dir)

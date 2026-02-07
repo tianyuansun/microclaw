@@ -119,10 +119,7 @@ async fn handle_webhook(
     StatusCode::OK
 }
 
-async fn process_webhook(
-    state: &WhatsAppState,
-    payload: WebhookPayload,
-) -> anyhow::Result<()> {
+async fn process_webhook(state: &WhatsAppState, payload: WebhookPayload) -> anyhow::Result<()> {
     for entry in payload.entry {
         for change in entry.changes {
             let value = match change.value {
@@ -255,9 +252,7 @@ async fn send_whatsapp_message(
     to: &str,
     text: &str,
 ) {
-    let url = format!(
-        "https://graph.facebook.com/v21.0/{phone_number_id}/messages"
-    );
+    let url = format!("https://graph.facebook.com/v21.0/{phone_number_id}/messages");
 
     // Split long messages (WhatsApp limit ~4096 chars)
     const MAX_LEN: usize = 4096;

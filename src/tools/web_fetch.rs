@@ -15,7 +15,8 @@ impl Tool for WebFetchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_fetch".into(),
-            description: "Fetch a URL and return its text content (HTML tags stripped). Max 20KB.".into(),
+            description: "Fetch a URL and return its text content (HTML tags stripped). Max 20KB."
+                .into(),
             input_schema: schema_object(
                 json!({
                     "url": {

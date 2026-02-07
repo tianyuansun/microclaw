@@ -3,9 +3,7 @@ use serde_json::json;
 use tracing::info;
 
 use super::{schema_object, Tool, ToolRegistry, ToolResult};
-use crate::claude::{
-    ContentBlock, Message, MessageContent, ResponseContentBlock, ToolDefinition,
-};
+use crate::claude::{ContentBlock, Message, MessageContent, ResponseContentBlock, ToolDefinition};
 use crate::config::Config;
 
 const MAX_SUB_AGENT_ITERATIONS: usize = 10;
@@ -54,10 +52,7 @@ impl Tool for SubAgentTool {
             None => return ToolResult::error("Missing required parameter: task".into()),
         };
 
-        let context = input
-            .get("context")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let context = input.get("context").and_then(|v| v.as_str()).unwrap_or("");
 
         info!("Sub-agent starting task: {}", task);
 
@@ -116,9 +111,9 @@ impl Tool for SubAgentTool {
                     .content
                     .iter()
                     .map(|block| match block {
-                        ResponseContentBlock::Text { text } => ContentBlock::Text {
-                            text: text.clone(),
-                        },
+                        ResponseContentBlock::Text { text } => {
+                            ContentBlock::Text { text: text.clone() }
+                        }
                         ResponseContentBlock::ToolUse { id, name, input } => {
                             ContentBlock::ToolUse {
                                 id: id.clone(),

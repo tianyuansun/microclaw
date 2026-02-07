@@ -39,10 +39,7 @@ impl Tool for GlobTool {
             Some(p) => p,
             None => return ToolResult::error("Missing 'pattern' parameter".into()),
         };
-        let base = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let base = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
         info!("Glob: {} in {}", pattern, base);
 

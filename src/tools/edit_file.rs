@@ -161,9 +161,7 @@ mod tests {
         assert!(result.is_error);
         assert!(result.content.contains("Missing 'path'"));
 
-        let result = tool
-            .execute(json!({"path": "/tmp/x"}))
-            .await;
+        let result = tool.execute(json!({"path": "/tmp/x"})).await;
         assert!(result.is_error);
         assert!(result.content.contains("Missing 'old_string'"));
     }

@@ -217,9 +217,18 @@ mod tests {
     #[test]
     fn test_format_todos() {
         let todos = vec![
-            TodoItem { task: "Plan".into(), status: "completed".into() },
-            TodoItem { task: "Build".into(), status: "in_progress".into() },
-            TodoItem { task: "Test".into(), status: "pending".into() },
+            TodoItem {
+                task: "Plan".into(),
+                status: "completed".into(),
+            },
+            TodoItem {
+                task: "Build".into(),
+                status: "in_progress".into(),
+            },
+            TodoItem {
+                task: "Test".into(),
+                status: "pending".into(),
+            },
         ];
         let formatted = format_todos(&todos);
         assert!(formatted.contains("1. [x] Plan"));
@@ -241,8 +250,14 @@ mod tests {
         let dir = test_dir();
         let groups_dir = dir.join("groups");
         let todos = vec![
-            TodoItem { task: "Step 1".into(), status: "pending".into() },
-            TodoItem { task: "Step 2".into(), status: "pending".into() },
+            TodoItem {
+                task: "Step 1".into(),
+                status: "pending".into(),
+            },
+            TodoItem {
+                task: "Step 2".into(),
+                status: "pending".into(),
+            },
         ];
         write_todos(&groups_dir, 42, &todos).unwrap();
         let loaded = read_todos(&groups_dir, 42);
@@ -301,14 +316,16 @@ mod tests {
         let write_tool = TodoWriteTool::new(dir.to_str().unwrap());
         let read_tool = TodoReadTool::new(dir.to_str().unwrap());
 
-        let result = write_tool.execute(json!({
-            "chat_id": 42,
-            "todos": [
-                {"task": "Research", "status": "completed"},
-                {"task": "Implement", "status": "in_progress"},
-                {"task": "Test", "status": "pending"}
-            ]
-        })).await;
+        let result = write_tool
+            .execute(json!({
+                "chat_id": 42,
+                "todos": [
+                    {"task": "Research", "status": "completed"},
+                    {"task": "Implement", "status": "in_progress"},
+                    {"task": "Test", "status": "pending"}
+                ]
+            }))
+            .await;
         assert!(!result.is_error);
         assert!(result.content.contains("3 tasks"));
 
@@ -337,10 +354,12 @@ mod tests {
     async fn test_todo_write_invalid_format() {
         let dir = test_dir();
         let tool = TodoWriteTool::new(dir.to_str().unwrap());
-        let result = tool.execute(json!({
-            "chat_id": 1,
-            "todos": "not an array"
-        })).await;
+        let result = tool
+            .execute(json!({
+                "chat_id": 1,
+                "todos": "not an array"
+            }))
+            .await;
         assert!(result.is_error);
         assert!(result.content.contains("Invalid todos format"));
         cleanup(&dir);
@@ -352,15 +371,19 @@ mod tests {
         let write_tool = TodoWriteTool::new(dir.to_str().unwrap());
         let read_tool = TodoReadTool::new(dir.to_str().unwrap());
 
-        write_tool.execute(json!({
-            "chat_id": 1,
-            "todos": [{"task": "Old task", "status": "pending"}]
-        })).await;
+        write_tool
+            .execute(json!({
+                "chat_id": 1,
+                "todos": [{"task": "Old task", "status": "pending"}]
+            }))
+            .await;
 
-        write_tool.execute(json!({
-            "chat_id": 1,
-            "todos": [{"task": "New task", "status": "in_progress"}]
-        })).await;
+        write_tool
+            .execute(json!({
+                "chat_id": 1,
+                "todos": [{"task": "New task", "status": "in_progress"}]
+            }))
+            .await;
 
         let result = read_tool.execute(json!({"chat_id": 1})).await;
         assert!(result.content.contains("New task"));

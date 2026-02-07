@@ -20,7 +20,13 @@ impl McpTool {
         // Sanitize: Claude API tool names must match [a-zA-Z0-9_-]{1,64}
         let qualified_name: String = qualified_name
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .take(64)
             .collect();
 
@@ -50,11 +56,7 @@ impl Tool for McpTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> ToolResult {
-        match self
-            .server
-            .call_tool(&self.tool_info.name, input)
-            .await
-        {
+        match self.server.call_tool(&self.tool_info.name, input).await {
             Ok(output) => ToolResult::success(output),
             Err(e) => ToolResult::error(format!("MCP tool error: {e}")),
         }

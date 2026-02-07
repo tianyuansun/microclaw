@@ -147,11 +147,8 @@ impl McpServer {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
             line.clear();
-            let read_result = tokio::time::timeout_at(
-                deadline,
-                inner.stdout.read_line(&mut line),
-            )
-            .await;
+            let read_result =
+                tokio::time::timeout_at(deadline, inner.stdout.read_line(&mut line)).await;
 
             match read_result {
                 Err(_) => return Err("MCP server response timeout (120s)".into()),
@@ -238,9 +235,10 @@ impl McpServer {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let input_schema = tool.get("inputSchema").cloned().unwrap_or_else(|| {
-                serde_json::json!({"type": "object", "properties": {}})
-            });
+            let input_schema = tool
+                .get("inputSchema")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}));
 
             tools.push(McpToolInfo {
                 server_name: self.name.clone(),

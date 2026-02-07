@@ -12,8 +12,8 @@ fn compute_next_run(cron_expr: &str, tz_name: &str) -> Result<String, String> {
     let tz: chrono_tz::Tz = tz_name
         .parse()
         .map_err(|_| format!("Invalid timezone: {tz_name}"))?;
-    let schedule = cron::Schedule::from_str(cron_expr)
-        .map_err(|e| format!("Invalid cron expression: {e}"))?;
+    let schedule =
+        cron::Schedule::from_str(cron_expr).map_err(|e| format!("Invalid cron expression: {e}"))?;
     let next = schedule
         .upcoming(tz)
         .next()
@@ -30,7 +30,10 @@ pub struct ScheduleTaskTool {
 
 impl ScheduleTaskTool {
     pub fn new(db: Arc<Database>, default_timezone: String) -> Self {
-        ScheduleTaskTool { db, default_timezone }
+        ScheduleTaskTool {
+            db,
+            default_timezone,
+        }
     }
 }
 
@@ -103,15 +106,25 @@ impl Tool for ScheduleTaskTool {
             "once" => {
                 // Validate the timestamp parses
                 if chrono::DateTime::parse_from_rfc3339(schedule_value).is_err() {
-                    return ToolResult::error("Invalid ISO 8601 timestamp for one-time schedule".into());
+                    return ToolResult::error(
+                        "Invalid ISO 8601 timestamp for one-time schedule".into(),
+                    );
                 }
                 schedule_value.to_string()
             }
             _ => return ToolResult::error("schedule_type must be 'cron' or 'once'".into()),
         };
 
-        match self.db.create_scheduled_task(chat_id, prompt, schedule_type, schedule_value, &next_run) {
-            Ok(id) => ToolResult::success(format!("Task #{id} scheduled (tz: {tz_name}). Next run: {next_run}")),
+        match self.db.create_scheduled_task(
+            chat_id,
+            prompt,
+            schedule_type,
+            schedule_value,
+            &next_run,
+        ) {
+            Ok(id) => ToolResult::success(format!(
+                "Task #{id} scheduled (tz: {tz_name}). Next run: {next_run}"
+            )),
             Err(e) => ToolResult::error(format!("Failed to create task: {e}")),
         }
     }
@@ -363,10 +376,7 @@ impl Tool for GetTaskHistoryTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: task_id".into()),
         };
-        let limit = input
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
+        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         match self.db.get_task_run_logs(task_id, limit) {
             Ok(logs) => {
@@ -375,7 +385,8 @@ impl Tool for GetTaskHistoryTool {
                         "No run history found for task #{task_id}."
                     ));
                 }
-                let mut output = format!("Run history for task #{task_id} (most recent first):\n\n");
+                let mut output =
+                    format!("Run history for task #{task_id} (most recent first):\n\n");
                 for log in &logs {
                     let status = if log.success { "OK" } else { "FAIL" };
                     output.push_str(&format!(
@@ -532,8 +543,14 @@ mod tests {
         let (db, dir) = test_db();
         db.create_scheduled_task(100, "task A", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
             .unwrap();
-        db.create_scheduled_task(100, "task B", "once", "2024-06-01T00:00:00Z", "2024-06-01T00:00:00Z")
-            .unwrap();
+        db.create_scheduled_task(
+            100,
+            "task B",
+            "once",
+            "2024-06-01T00:00:00Z",
+            "2024-06-01T00:00:00Z",
+        )
+        .unwrap();
 
         let tool = ListTasksTool::new(db);
         let result = tool.execute(json!({"chat_id": 100})).await;
@@ -628,15 +645,25 @@ mod tests {
             .unwrap();
 
         db.log_task_run(
-            task_id, 100,
-            "2024-01-01T00:00:00Z", "2024-01-01T00:00:05Z",
-            5000, true, Some("All good"),
-        ).unwrap();
+            task_id,
+            100,
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:05Z",
+            5000,
+            true,
+            Some("All good"),
+        )
+        .unwrap();
         db.log_task_run(
-            task_id, 100,
-            "2024-01-01T00:01:00Z", "2024-01-01T00:01:02Z",
-            2000, false, Some("Error: timeout"),
-        ).unwrap();
+            task_id,
+            100,
+            "2024-01-01T00:01:00Z",
+            "2024-01-01T00:01:02Z",
+            2000,
+            false,
+            Some("Error: timeout"),
+        )
+        .unwrap();
 
         let tool = GetTaskHistoryTool::new(db);
         let result = tool.execute(json!({"task_id": task_id})).await;

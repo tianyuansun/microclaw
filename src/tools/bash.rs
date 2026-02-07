@@ -90,9 +90,7 @@ impl Tool for BashTool {
                 }
             }
             Ok(Err(e)) => ToolResult::error(format!("Failed to execute command: {e}")),
-            Err(_) => ToolResult::error(format!(
-                "Command timed out after {timeout_secs} seconds"
-            )),
+            Err(_) => ToolResult::error(format!("Command timed out after {timeout_secs} seconds")),
         }
     }
 }
@@ -121,9 +119,7 @@ mod tests {
     #[tokio::test]
     async fn test_bash_stderr() {
         let tool = BashTool;
-        let result = tool
-            .execute(json!({"command": "echo err >&2"}))
-            .await;
+        let result = tool.execute(json!({"command": "echo err >&2"})).await;
         assert!(!result.is_error); // exit code is 0
         assert!(result.content.contains("STDERR"));
         assert!(result.content.contains("err"));

@@ -178,6 +178,8 @@ cp target/release/microclaw /usr/local/bin/
 
 ## Setup
 
+> **New:** MicroClaw now includes an interactive setup wizard (`microclaw setup`) and will auto-launch it on first `start` when required config is missing.
+
 ### 1. Create a Telegram bot
 
 1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
@@ -202,18 +204,34 @@ cp target/release/microclaw /usr/local/bin/
 3. Navigate to **API Keys** and create a new key
 4. Copy the key (starts with `sk-ant-`)
 
-### 3. Configure
+### 3. Configure (recommended: setup wizard)
 
 ```sh
-cp .env.example .env
+microclaw setup
 ```
 
-Edit `.env`:
+<!-- Setup wizard screenshot placeholder -->
+<!-- Replace with real screenshot later -->
+![Setup Wizard (placeholder)](screenshots/setup-wizard.png)
+
+The wizard provides:
+- Interactive terminal UI (field navigation + inline help)
+- Local validation (required fields, timezone, data dir write test)
+- Online validation (Telegram `getMe`, LLM API reachability)
+- Safe `.env` save with automatic backup (`.env.bak.<timestamp>`)
+
+You can still configure manually with `.env` if preferred:
 
 ```
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234...
-ANTHROPIC_API_KEY=sk-ant-...
 BOT_USERNAME=my_bot
+LLM_PROVIDER=anthropic
+LLM_API_KEY=sk-ant-...
+LLM_MODEL=claude-sonnet-4-20250514
+# optional
+LLM_BASE_URL=
+DATA_DIR=./data
+TIMEZONE=UTC
 ```
 
 ### 4. Run
@@ -229,9 +247,11 @@ All configuration is via environment variables (or `.env` file):
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | -- | Telegram bot token from BotFather |
-| `ANTHROPIC_API_KEY` | Yes | -- | Anthropic API key |
+| `LLM_API_KEY` | Yes | -- | LLM API key (`ANTHROPIC_API_KEY` also accepted for backward compatibility) |
 | `BOT_USERNAME` | Yes | -- | Bot username (without @) |
-| `CLAUDE_MODEL` | No | `claude-sonnet-4-20250514` | Claude model to use |
+| `LLM_PROVIDER` | No | `anthropic` | Provider: `anthropic` or `openai` |
+| `LLM_MODEL` | No | provider-specific | Model name (`CLAUDE_MODEL` fallback still supported) |
+| `LLM_BASE_URL` | No | provider default | Custom provider base URL (OpenRouter/DeepSeek/Groq/Ollama, etc.) |
 | `DATA_DIR` | No | `./data` | Directory for SQLite DB and memory files |
 | `MAX_TOKENS` | No | `8192` | Max tokens per Claude response |
 | `MAX_TOOL_ITERATIONS` | No | `25` | Max tool-use loop iterations per message |

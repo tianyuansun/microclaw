@@ -39,9 +39,7 @@ impl Config {
         let api_key = std::env::var("LLM_API_KEY")
             .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
             .map_err(|_| {
-                MicroClawError::Config(
-                    "LLM_API_KEY (or ANTHROPIC_API_KEY) not set".into(),
-                )
+                MicroClawError::Config("LLM_API_KEY (or ANTHROPIC_API_KEY) not set".into())
             })?;
 
         let default_model = match llm_provider.as_str() {
@@ -52,9 +50,7 @@ impl Config {
             .or_else(|_| std::env::var("CLAUDE_MODEL"))
             .unwrap_or_else(|_| default_model.into());
 
-        let llm_base_url = std::env::var("LLM_BASE_URL")
-            .ok()
-            .filter(|s| !s.is_empty());
+        let llm_base_url = std::env::var("LLM_BASE_URL").ok().filter(|s| !s.is_empty());
 
         let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".into());
         let max_tokens = std::env::var("MAX_TOKENS")
@@ -70,7 +66,9 @@ impl Config {
             .parse::<usize>()
             .map_err(|e| MicroClawError::Config(format!("Invalid MAX_HISTORY_MESSAGES: {e}")))?;
 
-        let openai_api_key = std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty());
+        let openai_api_key = std::env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
 
         let timezone = std::env::var("TIMEZONE").unwrap_or_else(|_| "UTC".into());
         timezone
@@ -105,9 +103,9 @@ impl Config {
             .split(',')
             .filter(|s| !s.trim().is_empty())
             .map(|s| {
-                s.trim()
-                    .parse::<i64>()
-                    .map_err(|e| MicroClawError::Config(format!("Invalid ALLOWED_GROUPS entry '{s}': {e}")))
+                s.trim().parse::<i64>().map_err(|e| {
+                    MicroClawError::Config(format!("Invalid ALLOWED_GROUPS entry '{s}': {e}"))
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
 

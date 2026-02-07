@@ -43,10 +43,7 @@ impl Tool for GrepTool {
             Some(p) => p,
             None => return ToolResult::error("Missing 'pattern' parameter".into()),
         };
-        let path = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let file_glob = input.get("glob").and_then(|v| v.as_str());
 
         info!("Grep: {} in {}", pattern, path);
@@ -87,9 +84,7 @@ fn grep_recursive(
     if metadata.is_file() {
         grep_file(path, re, results)?;
     } else if metadata.is_dir() {
-        let glob_pattern = file_glob.map(|g| {
-            glob::Pattern::new(g).ok()
-        }).flatten();
+        let glob_pattern = file_glob.map(|g| glob::Pattern::new(g).ok()).flatten();
 
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
@@ -126,11 +121,7 @@ fn grep_recursive(
     Ok(())
 }
 
-fn grep_file(
-    path: &str,
-    re: &regex::Regex,
-    results: &mut Vec<String>,
-) -> std::io::Result<()> {
+fn grep_file(path: &str, re: &regex::Regex, results: &mut Vec<String>) -> std::io::Result<()> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return Ok(()), // Skip binary / unreadable files
@@ -155,7 +146,11 @@ mod tests {
     fn setup_grep_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("microclaw_grep_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("hello.rs"), "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+        std::fs::write(
+            dir.join("hello.rs"),
+            "fn main() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("world.txt"), "hello world\ngoodbye world\n").unwrap();
         dir
     }

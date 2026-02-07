@@ -15,7 +15,8 @@ impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_search".into(),
-            description: "Search the web using DuckDuckGo. Returns titles, URLs, and snippets.".into(),
+            description: "Search the web using DuckDuckGo. Returns titles, URLs, and snippets."
+                .into(),
             input_schema: schema_object(
                 json!({
                     "query": {
@@ -70,11 +71,8 @@ async fn search_ddg(query: &str) -> Result<String, String> {
     // DuckDuckGo HTML results have <a class="result__a" href="...">title</a>
     // and <a class="result__snippet">snippet</a>
     let link_re =
-        regex::Regex::new(r#"<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>"#)
-            .unwrap();
-    let snippet_re =
-        regex::Regex::new(r#"<a[^>]+class="result__snippet"[^>]*>(.*?)</a>"#)
-            .unwrap();
+        regex::Regex::new(r#"<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>"#).unwrap();
+    let snippet_re = regex::Regex::new(r#"<a[^>]+class="result__snippet"[^>]*>(.*?)</a>"#).unwrap();
     let tag_re = regex::Regex::new(r"<[^>]+>").unwrap();
 
     let links: Vec<(String, String)> = link_re
@@ -94,7 +92,13 @@ async fn search_ddg(query: &str) -> Result<String, String> {
     let mut output = String::new();
     for (i, (href, title)) in links.iter().enumerate().take(8) {
         let snippet = snippets.get(i).map(|s| s.as_str()).unwrap_or("");
-        output.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title, href, snippet));
+        output.push_str(&format!(
+            "{}. {}\n   {}\n   {}\n\n",
+            i + 1,
+            title,
+            href,
+            snippet
+        ));
     }
 
     Ok(output)

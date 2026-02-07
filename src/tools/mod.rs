@@ -71,7 +71,10 @@ impl ToolRegistry {
             Box::new(web_fetch::WebFetchTool),
             Box::new(web_search::WebSearchTool),
             Box::new(send_message::SendMessageTool::new(bot)),
-            Box::new(schedule::ScheduleTaskTool::new(db.clone(), config.timezone.clone())),
+            Box::new(schedule::ScheduleTaskTool::new(
+                db.clone(),
+                config.timezone.clone(),
+            )),
             Box::new(schedule::ListTasksTool::new(db.clone())),
             Box::new(schedule::PauseTaskTool::new(db.clone())),
             Box::new(schedule::ResumeTaskTool::new(db.clone())),
@@ -122,10 +125,7 @@ impl ToolRegistry {
 }
 
 /// Helper to build a JSON Schema object with required properties.
-pub fn schema_object(
-    properties: serde_json::Value,
-    required: &[&str],
-) -> serde_json::Value {
+pub fn schema_object(properties: serde_json::Value, required: &[&str]) -> serde_json::Value {
     json!({
         "type": "object",
         "properties": properties,

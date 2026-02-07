@@ -178,6 +178,8 @@ cp target/release/microclaw /usr/local/bin/
 
 ## 配置
 
+> **新功能：** 现在支持交互式配置向导（`microclaw setup`），并且在 `start` 时若缺少必需配置会自动进入向导。
+
 ### 1. 创建 Telegram 机器人
 
 1. 打开 Telegram，搜索 [@BotFather](https://t.me/BotFather)
@@ -202,18 +204,33 @@ cp target/release/microclaw /usr/local/bin/
 3. 进入 **API Keys** 页面，创建新的 key
 4. 复制 key（以 `sk-ant-` 开头）
 
-### 3. 配置环境变量
+### 3. 配置（推荐：向导）
 
 ```sh
-cp .env.example .env
+microclaw setup
 ```
 
-编辑 `.env`：
+<!-- setup 向导截图占位，后续替换为真实图片 -->
+![Setup 向导（占位）](screenshots/setup-wizard.png)
+
+向导提供：
+- 终端交互式 UI（字段切换、状态提示、帮助）
+- 本地校验（必填项、时区、数据目录可写）
+- 在线校验（Telegram `getMe`、LLM API 连通性）
+- 安全写入 `.env`（自动备份 `.env.bak.<timestamp>`）
+
+如果你更喜欢手工配置，也可以直接写 `.env`：
 
 ```
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234...
-ANTHROPIC_API_KEY=sk-ant-...
 BOT_USERNAME=my_bot
+LLM_PROVIDER=anthropic
+LLM_API_KEY=sk-ant-...
+LLM_MODEL=claude-sonnet-4-20250514
+# 可选
+LLM_BASE_URL=
+DATA_DIR=./data
+TIMEZONE=UTC
 ```
 
 ### 4. 运行
@@ -227,9 +244,11 @@ microclaw start
 | 变量 | 必需 | 默认值 | 描述 |
 |------|------|--------|------|
 | `TELEGRAM_BOT_TOKEN` | 是 | -- | BotFather 的 Telegram bot token |
-| `ANTHROPIC_API_KEY` | 是 | -- | Anthropic API key |
+| `LLM_API_KEY` | 是 | -- | LLM API key（兼容 `ANTHROPIC_API_KEY`） |
 | `BOT_USERNAME` | 是 | -- | Bot 用户名（不带 @） |
-| `CLAUDE_MODEL` | 否 | `claude-sonnet-4-20250514` | 使用的 Claude 模型 |
+| `LLM_PROVIDER` | 否 | `anthropic` | 提供方：`anthropic` 或 `openai` |
+| `LLM_MODEL` | 否 | 随 provider 默认 | 模型名（仍兼容 `CLAUDE_MODEL`） |
+| `LLM_BASE_URL` | 否 | provider 默认 | 自定义 API 基础地址（OpenRouter/DeepSeek/Groq/Ollama 等） |
 | `DATA_DIR` | 否 | `./data` | SQLite 和记忆文件目录 |
 | `MAX_TOKENS` | 否 | `8192` | 每次 Claude 回复的最大 token |
 | `MAX_TOOL_ITERATIONS` | 否 | `25` | 每条消息的最大工具循环次数 |

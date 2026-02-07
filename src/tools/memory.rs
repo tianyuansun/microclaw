@@ -57,15 +57,9 @@ impl Tool for ReadMemoryTool {
             "chat" => {
                 let chat_id = match input.get("chat_id").and_then(|v| v.as_i64()) {
                     Some(id) => id,
-                    None => {
-                        return ToolResult::error(
-                            "Missing 'chat_id' for chat scope".into(),
-                        )
-                    }
+                    None => return ToolResult::error("Missing 'chat_id' for chat scope".into()),
                 };
-                self.groups_dir
-                    .join(chat_id.to_string())
-                    .join("CLAUDE.md")
+                self.groups_dir.join(chat_id.to_string()).join("CLAUDE.md")
             }
             _ => return ToolResult::error("scope must be 'global' or 'chat'".into()),
         };
@@ -143,15 +137,9 @@ impl Tool for WriteMemoryTool {
             "chat" => {
                 let chat_id = match input.get("chat_id").and_then(|v| v.as_i64()) {
                     Some(id) => id,
-                    None => {
-                        return ToolResult::error(
-                            "Missing 'chat_id' for chat scope".into(),
-                        )
-                    }
+                    None => return ToolResult::error("Missing 'chat_id' for chat scope".into()),
                 };
-                self.groups_dir
-                    .join(chat_id.to_string())
-                    .join("CLAUDE.md")
+                self.groups_dir.join(chat_id.to_string()).join("CLAUDE.md")
             }
             _ => return ToolResult::error("scope must be 'global' or 'chat'".into()),
         };
@@ -165,10 +153,7 @@ impl Tool for WriteMemoryTool {
         }
 
         match std::fs::write(&path, content) {
-            Ok(()) => ToolResult::success(format!(
-                "Memory saved to {} scope.",
-                scope
-            )),
+            Ok(()) => ToolResult::success(format!("Memory saved to {} scope.", scope)),
             Err(e) => ToolResult::error(format!("Failed to write memory: {e}")),
         }
     }

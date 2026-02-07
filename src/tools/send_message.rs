@@ -51,11 +51,7 @@ impl Tool for SendMessageTool {
             None => return ToolResult::error("Missing required parameter: text".into()),
         };
 
-        match self
-            .bot
-            .send_message(ChatId(chat_id), text)
-            .await
-        {
+        match self.bot.send_message(ChatId(chat_id), text).await {
             Ok(_) => ToolResult::success("Message sent successfully.".into()),
             Err(e) => ToolResult::error(format!("Failed to send message: {e}")),
         }

@@ -37,11 +37,11 @@ pub struct ScheduledTask {
     pub id: i64,
     pub chat_id: i64,
     pub prompt: String,
-    pub schedule_type: String,   // "cron" or "once"
-    pub schedule_value: String,  // cron expression or ISO timestamp
-    pub next_run: String,        // ISO timestamp
+    pub schedule_type: String,  // "cron" or "once"
+    pub schedule_value: String, // cron expression or ISO timestamp
+    pub next_run: String,       // ISO timestamp
     pub last_run: Option<String>,
-    pub status: String,          // "active", "paused", "completed", "cancelled"
+    pub status: String, // "active", "paused", "completed", "cancelled"
     pub created_at: String,
 }
 
@@ -236,17 +236,18 @@ impl Database {
                  ORDER BY timestamp DESC
                  LIMIT ?3",
             )?;
-            let rows = stmt.query_map(params![chat_id, ts, max as i64], |row| {
-                Ok(StoredMessage {
-                    id: row.get(0)?,
-                    chat_id: row.get(1)?,
-                    sender_name: row.get(2)?,
-                    content: row.get(3)?,
-                    is_from_bot: row.get::<_, i32>(4)? != 0,
-                    timestamp: row.get(5)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            let rows = stmt
+                .query_map(params![chat_id, ts, max as i64], |row| {
+                    Ok(StoredMessage {
+                        id: row.get(0)?,
+                        chat_id: row.get(1)?,
+                        sender_name: row.get(2)?,
+                        content: row.get(3)?,
+                        is_from_bot: row.get::<_, i32>(4)? != 0,
+                        timestamp: row.get(5)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             rows
         } else {
             let mut stmt = conn.prepare(
@@ -256,17 +257,18 @@ impl Database {
                  ORDER BY timestamp DESC
                  LIMIT ?2",
             )?;
-            let rows = stmt.query_map(params![chat_id, fallback as i64], |row| {
-                Ok(StoredMessage {
-                    id: row.get(0)?,
-                    chat_id: row.get(1)?,
-                    sender_name: row.get(2)?,
-                    content: row.get(3)?,
-                    is_from_bot: row.get::<_, i32>(4)? != 0,
-                    timestamp: row.get(5)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            let rows = stmt
+                .query_map(params![chat_id, fallback as i64], |row| {
+                    Ok(StoredMessage {
+                        id: row.get(0)?,
+                        chat_id: row.get(1)?,
+                        sender_name: row.get(2)?,
+                        content: row.get(3)?,
+                        is_from_bot: row.get::<_, i32>(4)? != 0,
+                        timestamp: row.get(5)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             rows
         };
 
@@ -480,10 +482,7 @@ impl Database {
 
     pub fn delete_session(&self, chat_id: i64) -> Result<bool, MicroClawError> {
         let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM sessions WHERE chat_id = ?1",
-            params![chat_id],
-        )?;
+        let rows = conn.execute("DELETE FROM sessions WHERE chat_id = ?1", params![chat_id])?;
         Ok(rows > 0)
     }
 
@@ -643,7 +642,8 @@ mod tests {
             content: "hi".into(),
             is_from_bot: false,
             timestamp: "2024-01-01T00:00:01Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Bot response
         db.store_message(&StoredMessage {
@@ -653,7 +653,8 @@ mod tests {
             content: "hello!".into(),
             is_from_bot: true,
             timestamp: "2024-01-01T00:00:02Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // User message 2 (after bot response)
         db.store_message(&StoredMessage {
@@ -663,7 +664,8 @@ mod tests {
             content: "how are you?".into(),
             is_from_bot: false,
             timestamp: "2024-01-01T00:00:03Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // User message 3
         db.store_message(&StoredMessage {
@@ -673,9 +675,12 @@ mod tests {
             content: "me too".into(),
             is_from_bot: false,
             timestamp: "2024-01-01T00:00:04Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        let messages = db.get_messages_since_last_bot_response(100, 50, 10).unwrap();
+        let messages = db
+            .get_messages_since_last_bot_response(100, 50, 10)
+            .unwrap();
         // Should include the bot message and everything after it
         assert!(messages.len() >= 2);
         // First should be the bot msg or after it
@@ -697,7 +702,8 @@ mod tests {
                 content: format!("msg {i}"),
                 is_from_bot: false,
                 timestamp: format!("2024-01-01T00:00:0{i}Z"),
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         // Fallback to last 3
@@ -711,9 +717,15 @@ mod tests {
     #[test]
     fn test_create_and_get_scheduled_task() {
         let (db, dir) = test_db();
-        let id = db.create_scheduled_task(
-            100, "say hello", "cron", "0 */5 * * * *", "2024-06-01T00:05:00Z",
-        ).unwrap();
+        let id = db
+            .create_scheduled_task(
+                100,
+                "say hello",
+                "cron",
+                "0 */5 * * * *",
+                "2024-06-01T00:05:00Z",
+            )
+            .unwrap();
         assert!(id > 0);
 
         let tasks = db.get_tasks_for_chat(100).unwrap();
@@ -727,12 +739,16 @@ mod tests {
     #[test]
     fn test_get_due_tasks() {
         let (db, dir) = test_db();
+        db.create_scheduled_task(100, "task1", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
         db.create_scheduled_task(
-            100, "task1", "cron", "0 * * * * *", "2024-01-01T00:00:00Z",
-        ).unwrap();
-        db.create_scheduled_task(
-            100, "task2", "once", "2099-12-31T00:00:00Z", "2099-12-31T00:00:00Z",
-        ).unwrap();
+            100,
+            "task2",
+            "once",
+            "2099-12-31T00:00:00Z",
+            "2099-12-31T00:00:00Z",
+        )
+        .unwrap();
 
         // Only task1 is due
         let due = db.get_due_tasks("2024-06-01T00:00:00Z").unwrap();
@@ -748,12 +764,24 @@ mod tests {
     #[test]
     fn test_get_tasks_for_chat_filters_status() {
         let (db, dir) = test_db();
-        let id1 = db.create_scheduled_task(
-            100, "active task", "cron", "0 * * * * *", "2024-01-01T00:00:00Z",
-        ).unwrap();
-        let id2 = db.create_scheduled_task(
-            100, "to cancel", "once", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
-        ).unwrap();
+        let id1 = db
+            .create_scheduled_task(
+                100,
+                "active task",
+                "cron",
+                "0 * * * * *",
+                "2024-01-01T00:00:00Z",
+            )
+            .unwrap();
+        let id2 = db
+            .create_scheduled_task(
+                100,
+                "to cancel",
+                "once",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            )
+            .unwrap();
         db.update_task_status(id2, "cancelled").unwrap();
 
         // Only active/paused tasks should be returned
@@ -772,9 +800,9 @@ mod tests {
     #[test]
     fn test_update_task_status() {
         let (db, dir) = test_db();
-        let id = db.create_scheduled_task(
-            100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z",
-        ).unwrap();
+        let id = db
+            .create_scheduled_task(100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
 
         assert!(db.update_task_status(id, "paused").unwrap());
         assert!(db.update_task_status(id, "active").unwrap());
@@ -788,11 +816,12 @@ mod tests {
     #[test]
     fn test_update_task_after_run_cron() {
         let (db, dir) = test_db();
-        let id = db.create_scheduled_task(
-            100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z",
-        ).unwrap();
+        let id = db
+            .create_scheduled_task(100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
 
-        db.update_task_after_run(id, "2024-01-01T00:01:00Z", Some("2024-01-01T00:02:00Z")).unwrap();
+        db.update_task_after_run(id, "2024-01-01T00:01:00Z", Some("2024-01-01T00:02:00Z"))
+            .unwrap();
 
         let tasks = db.get_tasks_for_chat(100).unwrap();
         assert_eq!(tasks[0].last_run.as_deref(), Some("2024-01-01T00:01:00Z"));
@@ -804,12 +833,19 @@ mod tests {
     #[test]
     fn test_update_task_after_run_one_shot() {
         let (db, dir) = test_db();
-        let id = db.create_scheduled_task(
-            100, "test", "once", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
-        ).unwrap();
+        let id = db
+            .create_scheduled_task(
+                100,
+                "test",
+                "once",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            )
+            .unwrap();
 
         // One-shot: no next_run, should mark as completed
-        db.update_task_after_run(id, "2024-01-01T00:00:00Z", None).unwrap();
+        db.update_task_after_run(id, "2024-01-01T00:00:00Z", None)
+            .unwrap();
 
         // Should not appear in active/paused list
         let tasks = db.get_tasks_for_chat(100).unwrap();
@@ -820,9 +856,9 @@ mod tests {
     #[test]
     fn test_delete_task() {
         let (db, dir) = test_db();
-        let id = db.create_scheduled_task(
-            100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z",
-        ).unwrap();
+        let id = db
+            .create_scheduled_task(100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
 
         assert!(db.delete_task(id).unwrap());
         assert!(!db.delete_task(id).unwrap()); // already deleted
@@ -843,7 +879,8 @@ mod tests {
                 content: format!("message {i}"),
                 is_from_bot: false,
                 timestamp: format!("2024-01-01T00:00:0{i}Z"),
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         let messages = db.get_all_messages(100).unwrap();
@@ -859,15 +896,21 @@ mod tests {
     #[test]
     fn test_log_task_run() {
         let (db, dir) = test_db();
-        let task_id = db.create_scheduled_task(
-            100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z",
-        ).unwrap();
+        let task_id = db
+            .create_scheduled_task(100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
 
-        let log_id = db.log_task_run(
-            task_id, 100,
-            "2024-01-01T00:00:00Z", "2024-01-01T00:00:05Z",
-            5000, true, Some("Success"),
-        ).unwrap();
+        let log_id = db
+            .log_task_run(
+                task_id,
+                100,
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:05Z",
+                5000,
+                true,
+                Some("Success"),
+            )
+            .unwrap();
         assert!(log_id > 0);
 
         let logs = db.get_task_run_logs(task_id, 10).unwrap();
@@ -882,17 +925,21 @@ mod tests {
     #[test]
     fn test_get_task_run_logs_ordering_and_limit() {
         let (db, dir) = test_db();
-        let task_id = db.create_scheduled_task(
-            100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z",
-        ).unwrap();
+        let task_id = db
+            .create_scheduled_task(100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
 
         for i in 0..5 {
             db.log_task_run(
-                task_id, 100,
+                task_id,
+                100,
                 &format!("2024-01-01T00:0{i}:00Z"),
                 &format!("2024-01-01T00:0{i}:05Z"),
-                5000, true, Some(&format!("Run {i}")),
-            ).unwrap();
+                5000,
+                true,
+                Some(&format!("Run {i}")),
+            )
+            .unwrap();
         }
 
         // Limit to 3, most recent first
@@ -955,7 +1002,8 @@ mod tests {
             content: "old msg".into(),
             is_from_bot: false,
             timestamp: "2024-01-01T00:00:01Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Bot message at the cutoff
         db.store_message(&StoredMessage {
@@ -965,7 +1013,8 @@ mod tests {
             content: "response".into(),
             is_from_bot: true,
             timestamp: "2024-01-01T00:00:02Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // User messages after cutoff
         db.store_message(&StoredMessage {
@@ -975,7 +1024,8 @@ mod tests {
             content: "new msg 1".into(),
             is_from_bot: false,
             timestamp: "2024-01-01T00:00:03Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.store_message(&StoredMessage {
             id: "m4".into(),
@@ -984,7 +1034,8 @@ mod tests {
             content: "new msg 2".into(),
             is_from_bot: false,
             timestamp: "2024-01-01T00:00:04Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Bot message after cutoff (should be excluded - only non-bot)
         db.store_message(&StoredMessage {
@@ -994,9 +1045,12 @@ mod tests {
             content: "bot again".into(),
             is_from_bot: true,
             timestamp: "2024-01-01T00:00:05Z".into(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        let msgs = db.get_new_user_messages_since(100, "2024-01-01T00:00:02Z").unwrap();
+        let msgs = db
+            .get_new_user_messages_since(100, "2024-01-01T00:00:02Z")
+            .unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].content, "new msg 1");
         assert_eq!(msgs[1].content, "new msg 2");

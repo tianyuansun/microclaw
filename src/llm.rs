@@ -288,10 +288,7 @@ impl LlmProvider for OpenAiProvider {
 // Format translation helpers  (internal Anthropic-style ↔ OpenAI)
 // ---------------------------------------------------------------------------
 
-fn translate_messages_to_oai(
-    system: &str,
-    messages: &[Message],
-) -> Vec<serde_json::Value> {
+fn translate_messages_to_oai(system: &str, messages: &[Message]) -> Vec<serde_json::Value> {
     let mut out: Vec<serde_json::Value> = Vec::new();
 
     // System message
@@ -341,8 +338,9 @@ fn translate_messages_to_oai(
                     out.push(m);
                 } else {
                     // User role — tool_results, images, or text
-                    let has_tool_results =
-                        blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }));
+                    let has_tool_results = blocks
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
 
                     if has_tool_results {
                         // Each tool result → separate "tool" message
@@ -367,8 +365,9 @@ fn translate_messages_to_oai(
                         }
                     } else {
                         // Images + text → multipart content array
-                        let has_images =
-                            blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+                        let has_images = blocks
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::Image { .. }));
                         if has_images {
                             let parts: Vec<serde_json::Value> = blocks
                                 .iter()
@@ -382,8 +381,7 @@ fn translate_messages_to_oai(
                                                 media_type, data, ..
                                             },
                                     } => {
-                                        let url =
-                                            format!("data:{media_type};base64,{data}");
+                                        let url = format!("data:{media_type};base64,{data}");
                                         Some(json!({
                                             "type": "image_url",
                                             "image_url": {"url": url}

@@ -28,7 +28,10 @@ async fn run_due_tasks(state: &Arc<AppState>) {
     };
 
     for task in tasks {
-        info!("Scheduler: executing task #{} for chat {}", task.id, task.chat_id);
+        info!(
+            "Scheduler: executing task #{} for chat {}",
+            task.id, task.chat_id
+        );
 
         let started_at = Utc::now();
         let started_at_str = started_at.to_rfc3339();
@@ -46,12 +49,8 @@ async fn run_due_tasks(state: &Arc<AppState>) {
         {
             Ok(response) => {
                 if !response.is_empty() {
-                    crate::telegram::send_response(
-                        &state.bot,
-                        ChatId(task.chat_id),
-                        &response,
-                    )
-                    .await;
+                    crate::telegram::send_response(&state.bot, ChatId(task.chat_id), &response)
+                        .await;
                 }
                 let summary = if response.len() > 200 {
                     format!("{}...", &response[..response.floor_char_boundary(200)])
@@ -91,11 +90,7 @@ async fn run_due_tasks(state: &Arc<AppState>) {
         }
 
         // Compute next run
-        let tz: chrono_tz::Tz = state
-            .config
-            .timezone
-            .parse()
-            .unwrap_or(chrono_tz::Tz::UTC);
+        let tz: chrono_tz::Tz = state.config.timezone.parse().unwrap_or(chrono_tz::Tz::UTC);
         let next_run = if task.schedule_type == "cron" {
             match cron::Schedule::from_str(&task.schedule_value) {
                 Ok(schedule) => schedule.upcoming(tz).next().map(|t| t.to_rfc3339()),
@@ -108,9 +103,10 @@ async fn run_due_tasks(state: &Arc<AppState>) {
             None // one-shot
         };
 
-        if let Err(e) = state
-            .db
-            .update_task_after_run(task.id, &started_at_str, next_run.as_deref())
+        if let Err(e) =
+            state
+                .db
+                .update_task_after_run(task.id, &started_at_str, next_run.as_deref())
         {
             error!("Scheduler: failed to update task #{}: {e}", task.id);
         }

@@ -53,10 +53,7 @@ impl Tool for ActivateSkillTool {
             Some((meta, body)) => {
                 let mut result = format!("# Skill: {}\n\n", meta.name);
                 result.push_str(&format!("Description: {}\n", meta.description));
-                result.push_str(&format!(
-                    "Skill directory: {}\n\n",
-                    meta.dir_path.display()
-                ));
+                result.push_str(&format!("Skill directory: {}\n\n", meta.dir_path.display()));
                 result.push_str("## Instructions\n\n");
                 result.push_str(&body);
                 ToolResult::success(result)
@@ -123,14 +120,21 @@ mod tests {
     #[tokio::test]
     async fn test_activate_skill_found() {
         let dir = test_dir();
-        create_skill(&dir, "pdf", "Convert to PDF", "Use pdflatex to convert documents.");
+        create_skill(
+            &dir,
+            "pdf",
+            "Convert to PDF",
+            "Use pdflatex to convert documents.",
+        );
 
         let tool = ActivateSkillTool::new(dir.to_str().unwrap());
         let result = tool.execute(json!({"skill_name": "pdf"})).await;
         assert!(!result.is_error);
         assert!(result.content.contains("# Skill: pdf"));
         assert!(result.content.contains("Convert to PDF"));
-        assert!(result.content.contains("Use pdflatex to convert documents."));
+        assert!(result
+            .content
+            .contains("Use pdflatex to convert documents."));
         assert!(result.content.contains("Skill directory:"));
         cleanup(&dir);
     }

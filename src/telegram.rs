@@ -4,12 +4,10 @@ use teloxide::prelude::*;
 use teloxide::types::ChatAction;
 use tracing::{error, info};
 
-use crate::claude::{
-    ContentBlock, ImageSource, Message, MessageContent, ResponseContentBlock,
-};
-use crate::llm::LlmProvider;
+use crate::claude::{ContentBlock, ImageSource, Message, MessageContent, ResponseContentBlock};
 use crate::config::Config;
 use crate::db::{Database, StoredMessage};
+use crate::llm::LlmProvider;
 use crate::memory::MemoryManager;
 use crate::skills::SkillManager;
 use crate::tools::ToolRegistry;
@@ -98,9 +96,7 @@ async fn handle_message(
     if text.trim() == "/reset" {
         let chat_id = msg.chat.id.0;
         let _ = state.db.delete_session(chat_id);
-        let _ = bot
-            .send_message(msg.chat.id, "Session cleared.")
-            .await;
+        let _ = bot.send_message(msg.chat.id, "Session cleared.").await;
         return Ok(());
     }
 
@@ -147,7 +143,9 @@ async fn handle_message(
                         }
                         Err(e) => {
                             error!("Whisper transcription failed: {e}");
-                            text = format!("[voice message from {sender_name}]: [transcription failed: {e}]");
+                            text = format!(
+                                "[voice message from {sender_name}]: [transcription failed: {e}]"
+                            );
                         }
                     }
                 }
@@ -175,11 +173,7 @@ async fn handle_message(
     let sender_name = msg
         .from
         .as_ref()
-        .map(|u| {
-            u.username
-                .clone()
-                .unwrap_or_else(|| u.first_name.clone())
-        })
+        .map(|u| u.username.clone().unwrap_or_else(|| u.first_name.clone()))
         .unwrap_or_else(|| "Unknown".into());
 
     let chat_type = match msg.chat.kind {
@@ -197,7 +191,14 @@ async fn handle_message(
                 .db
                 .upsert_chat(chat_id, chat_title.as_deref(), chat_type);
             let stored_content = if image_data.is_some() {
-                format!("[image]{}", if text.is_empty() { String::new() } else { format!(" {text}") })
+                format!(
+                    "[image]{}",
+                    if text.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {text}")
+                    }
+                )
             } else {
                 text
             };
@@ -220,7 +221,14 @@ async fn handle_message(
         .upsert_chat(chat_id, chat_title.as_deref(), chat_type);
 
     let stored_content = if image_data.is_some() {
-        format!("[image]{}", if text.is_empty() { String::new() } else { format!(" {text}") })
+        format!(
+            "[image]{}",
+            if text.is_empty() {
+                String::new()
+            } else {
+                format!(" {text}")
+            }
+        )
     } else {
         text.clone()
     };
@@ -290,9 +298,7 @@ async fn handle_message(
         Err(e) => {
             typing_handle.abort();
             error!("Error processing message: {}", e);
-            let _ = bot
-                .send_message(msg.chat.id, format!("Error: {e}"))
-                .await;
+            let _ = bot.send_message(msg.chat.id, format!("Error: {e}")).await;
         }
     }
 
@@ -303,7 +309,9 @@ async fn download_telegram_file(
     bot: &Bot,
     file_id: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let file = bot.get_file(teloxide::types::FileId(file_id.to_string())).await?;
+    let file = bot
+        .get_file(teloxide::types::FileId(file_id.to_string()))
+        .await?;
     let mut buf = Vec::new();
     teloxide::net::Download::download_file(bot, &file.path, &mut buf).await?;
     Ok(buf)
@@ -339,13 +347,17 @@ pub(crate) async fn process_with_claude(
     // Build system prompt
     let memory_context = state.memory.build_memory_context(chat_id);
     let skills_catalog = state.skills.build_skills_catalog();
-    let system_prompt = build_system_prompt(&state.config.bot_username, &memory_context, chat_id, &skills_catalog);
+    let system_prompt = build_system_prompt(
+        &state.config.bot_username,
+        &memory_context,
+        chat_id,
+        &skills_catalog,
+    );
 
     // Try to resume from session
     let mut messages = if let Some((json, updated_at)) = state.db.load_session(chat_id)? {
         // Session exists — deserialize and append new user messages
-        let mut session_messages: Vec<Message> =
-            serde_json::from_str(&json).unwrap_or_default();
+        let mut session_messages: Vec<Message> = serde_json::from_str(&json).unwrap_or_default();
 
         if session_messages.is_empty() {
             // Corrupted session, fall back to DB history
@@ -401,9 +413,7 @@ pub(crate) async fn process_with_claude(
                     },
                 }];
                 if !text_content.is_empty() {
-                    blocks.push(ContentBlock::Text {
-                        text: text_content,
-                    });
+                    blocks.push(ContentBlock::Text { text: text_content });
                 }
                 last_msg.content = MessageContent::Blocks(blocks);
             }
@@ -465,16 +475,14 @@ pub(crate) async fn process_with_claude(
                 .content
                 .iter()
                 .map(|block| match block {
-                    ResponseContentBlock::Text { text } => ContentBlock::Text {
-                        text: text.clone(),
-                    },
-                    ResponseContentBlock::ToolUse { id, name, input } => {
-                        ContentBlock::ToolUse {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: input.clone(),
-                        }
+                    ResponseContentBlock::Text { text } => {
+                        ContentBlock::Text { text: text.clone() }
                     }
+                    ResponseContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                    },
                 })
                 .collect();
 
@@ -558,10 +566,18 @@ fn load_messages_from_db(
             .db
             .get_recent_messages(chat_id, state.config.max_history_messages)?
     };
-    Ok(history_to_claude_messages(&history, &state.config.bot_username))
+    Ok(history_to_claude_messages(
+        &history,
+        &state.config.bot_username,
+    ))
 }
 
-fn build_system_prompt(bot_username: &str, memory_context: &str, chat_id: i64, skills_catalog: &str) -> String {
+fn build_system_prompt(
+    bot_username: &str,
+    memory_context: &str,
+    chat_id: i64,
+    skills_catalog: &str,
+) -> String {
     let mut prompt = format!(
         r#"You are {bot_username}, a helpful AI assistant on Telegram. You can execute tools to help users with tasks.
 
@@ -609,18 +625,11 @@ Be concise and helpful. When executing commands or tools, show the relevant resu
     prompt
 }
 
-fn history_to_claude_messages(
-    history: &[StoredMessage],
-    _bot_username: &str,
-) -> Vec<Message> {
+fn history_to_claude_messages(history: &[StoredMessage], _bot_username: &str) -> Vec<Message> {
     let mut messages = Vec::new();
 
     for msg in history {
-        let role = if msg.is_from_bot {
-            "assistant"
-        } else {
-            "user"
-        };
+        let role = if msg.is_from_bot { "assistant" } else { "user" };
 
         let content = if msg.is_from_bot {
             msg.content.clone()
@@ -675,9 +684,7 @@ fn split_response_text(text: &str) -> Vec<String> {
         let chunk_len = if remaining.len() <= MAX_LEN {
             remaining.len()
         } else {
-            remaining[..MAX_LEN]
-                .rfind('\n')
-                .unwrap_or(MAX_LEN)
+            remaining[..MAX_LEN].rfind('\n').unwrap_or(MAX_LEN)
         };
         chunks.push(remaining[..chunk_len].to_string());
         remaining = &remaining[chunk_len..];
@@ -701,9 +708,7 @@ pub(crate) async fn send_response(bot: &Bot, chat_id: ChatId, text: &str) {
         let chunk_len = if remaining.len() <= MAX_LEN {
             remaining.len()
         } else {
-            remaining[..MAX_LEN]
-                .rfind('\n')
-                .unwrap_or(MAX_LEN)
+            remaining[..MAX_LEN].rfind('\n').unwrap_or(MAX_LEN)
         };
 
         let chunk = &remaining[..chunk_len];
@@ -802,9 +807,7 @@ async fn compact_messages(
 
     let summarize_messages = vec![Message {
         role: "user".into(),
-        content: MessageContent::Text(format!(
-            "{summarize_prompt}\n\n---\n\n{summary_input}"
-        )),
+        content: MessageContent::Text(format!("{summarize_prompt}\n\n---\n\n{summary_input}")),
     }];
 
     let summary = match llm
@@ -831,9 +834,7 @@ async fn compact_messages(
     let mut compacted = vec![
         Message {
             role: "user".into(),
-            content: MessageContent::Text(format!(
-                "[Conversation Summary]\n{summary}"
-            )),
+            content: MessageContent::Text(format!("[Conversation Summary]\n{summary}")),
         },
         Message {
             role: "assistant".into(),
@@ -851,8 +852,7 @@ async fn compact_messages(
                 if let Some(last_mut) = compacted.last_mut() {
                     let existing = message_to_text(last_mut);
                     let new_text = message_to_text(msg);
-                    last_mut.content =
-                        MessageContent::Text(format!("{existing}\n{new_text}"));
+                    last_mut.content = MessageContent::Text(format!("{existing}\n{new_text}"));
                 }
                 continue;
             }
@@ -964,9 +964,7 @@ mod tests {
 
     #[test]
     fn test_history_to_claude_messages_only_assistant() {
-        let history = vec![
-            make_msg("1", "bot", "hello", true, "2024-01-01T00:00:01Z"),
-        ];
+        let history = vec![make_msg("1", "bot", "hello", true, "2024-01-01T00:00:01Z")];
         let messages = history_to_claude_messages(&history, "bot");
         // Should be empty (leading + trailing assistant removed)
         assert!(messages.is_empty());
