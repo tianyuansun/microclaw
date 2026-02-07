@@ -1,0 +1,82 @@
+use async_trait::async_trait;
+use serde_json::json;
+
+use super::{schema_object, Tool, ToolResult};
+use crate::claude::ToolDefinition;
+
+pub struct WebFetchTool;
+
+#[async_trait]
+impl Tool for WebFetchTool {
+    fn name(&self) -> &str {
+        "web_fetch"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "web_fetch".into(),
+            description: "Fetch a URL and return its text content (HTML tags stripped). Max 20KB.".into(),
+            input_schema: schema_object(
+                json!({
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to fetch"
+                    }
+                }),
+                &["url"],
+            ),
+        }
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> ToolResult {
+        let url = match input.get("url").and_then(|v| v.as_str()) {
+            Some(u) => u,
+            None => return ToolResult::error("Missing required parameter: url".into()),
+        };
+
+        match fetch_url(url).await {
+            Ok(text) => ToolResult::success(text),
+            Err(e) => ToolResult::error(format!("Failed to fetch URL: {e}")),
+        }
+    }
+}
+
+async fn fetch_url(url: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get(url)
+        .header("User-Agent", "MicroClaw/1.0")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+
+    // Strip HTML tags with regex
+    let tag_re = regex::Regex::new(r"<[^>]+>").unwrap();
+    let text = tag_re.replace_all(&body, "");
+
+    // Collapse whitespace
+    let ws_re = regex::Regex::new(r"\s+").unwrap();
+    let text = ws_re.replace_all(&text, " ");
+
+    let text = text.trim().to_string();
+
+    // Truncate to ~20KB
+    const MAX_BYTES: usize = 20_000;
+    if text.len() > MAX_BYTES {
+        let truncated = &text[..text.floor_char_boundary(MAX_BYTES)];
+        Ok(format!("{truncated}\n\n[Truncated at 20KB]"))
+    } else {
+        Ok(text)
+    }
+}
