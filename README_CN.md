@@ -202,7 +202,7 @@ cp target/release/microclaw /usr/local/bin/
 
 ## 配置
 
-> **新功能：** 现在支持交互式配置向导（`microclaw setup`），并且在 `start` 时若缺少必需配置会自动进入向导。
+> **新功能：** 现在支持交互式问答配置（`microclaw config`），并且在 `start` 时若缺少必需配置会自动进入配置流程。
 
 ### 1. 创建 Telegram 机器人
 
@@ -228,26 +228,33 @@ cp target/release/microclaw /usr/local/bin/
 3. 进入 **API Keys** 页面，创建新的 key
 4. 复制 key（以 `sk-ant-` 开头）
 
-### 3. 配置（推荐：向导）
+### 3. 配置（推荐：交互式问答）
 
 ```sh
-microclaw setup
+microclaw config
 ```
 
 <!-- setup 向导截图占位，后续替换为真实图片 -->
 ![Setup 向导（占位）](screenshots/setup-wizard.png)
 
-向导提供：
-- 终端交互式 UI（字段切换、状态提示、帮助）
-- provider/model 可视化列表选择（`Enter` 打开列表，`↑/↓` 选择，`Enter` 确认）
-- 本地校验（必填项、时区、数据目录可写）
-- 在线校验（Telegram `getMe`、LLM API 连通性）
+`config` 流程提供：
+- 一问一答式配置，所有字段都带默认值（可直接回车确认）
+- provider/model 选择（编号选择 + 自定义覆盖）
+- 更好的 Ollama 体验：自动探测本地模型 + 本地默认地址
 - 安全写入 `microclaw.config.yaml`（自动备份）
+- 自动创建 `data_dir` 和 `working_dir`
+
+如果你更喜欢全屏 TUI，也可以继续用：
+
+```sh
+microclaw setup
+```
 
 向导内置 provider 预设：
 - `openai`
 - `openrouter`
 - `anthropic`
+- `ollama`
 - `google`
 - `alibaba`
 - `deepseek`
@@ -263,6 +270,8 @@ microclaw setup
 - `huggingface`
 - `together`
 - `custom`（手动填写 provider/model/base URL）
+
+对于 Ollama：`llm_base_url` 默认是 `http://127.0.0.1:11434/v1`，`api_key` 可留空，交互式配置会尝试自动发现本地已安装模型。
 
 如果你更喜欢手工配置，也可以直接写 `microclaw.config.yaml`：
 
@@ -315,7 +324,7 @@ microclaw gateway uninstall
 | 配置键 | 必需 | 默认值 | 描述 |
 |------|------|--------|------|
 | `telegram_bot_token` | 是 | -- | BotFather 的 Telegram bot token |
-| `api_key` | 是 | -- | LLM API key |
+| `api_key` | 是* | -- | LLM API key（`ollama` 可留空） |
 | `bot_username` | 是 | -- | Bot 用户名（不带 @） |
 | `llm_provider` | 否 | `anthropic` | 提供方预设 ID（或自定义 ID）。`anthropic` 走原生 Anthropic API，其他走 OpenAI 兼容 API |
 | `model` | 否 | 随 provider 默认 | 模型名 |
@@ -331,7 +340,7 @@ microclaw gateway uninstall
 
 ### 支持的 `llm_provider` 值
 
-`openai`、`openrouter`、`anthropic`、`google`、`alibaba`、`deepseek`、`moonshot`、`mistral`、`azure`、`bedrock`、`zhipu`、`minimax`、`cohere`、`tencent`、`xai`、`huggingface`、`together`、`custom`。
+`openai`、`openrouter`、`anthropic`、`ollama`、`google`、`alibaba`、`deepseek`、`moonshot`、`mistral`、`azure`、`bedrock`、`zhipu`、`minimax`、`cohere`、`tencent`、`xai`、`huggingface`、`together`、`custom`。
 
 ## 群聊
 

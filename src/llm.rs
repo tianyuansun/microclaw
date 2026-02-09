@@ -296,14 +296,15 @@ impl LlmProvider for OpenAiProvider {
         let max_retries = 3;
 
         loop {
-            let response = self
+            let mut req = self
                 .http
                 .post(&self.chat_url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
                 .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await?;
+                .json(&body);
+            if !self.api_key.trim().is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", self.api_key));
+            }
+            let response = req.send().await?;
 
             let status = response.status();
 

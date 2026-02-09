@@ -1,6 +1,8 @@
 use microclaw::config::Config;
 use microclaw::error::MicroClawError;
-use microclaw::{builtin_skills, db, gateway, logging, mcp, memory, setup, skills, telegram};
+use microclaw::{
+    builtin_skills, config_wizard, db, gateway, logging, mcp, memory, setup, skills, telegram,
+};
 use std::path::Path;
 use tracing::info;
 
@@ -16,6 +18,7 @@ USAGE:
 COMMANDS:
     start       Start the bot (Telegram + optional WhatsApp/Discord)
     gateway     Manage gateway service (install/uninstall/start/stop/status/logs)
+    config      Run interactive Q&A config flow (recommended)
     setup       Run interactive setup wizard
     version     Show version information
     help        Show this help message
@@ -38,8 +41,8 @@ FEATURES:
     - Sensitive path blacklisting for file tools
 
 SETUP:
-    1. Run: microclaw setup
-       (or run microclaw start and follow auto-setup on first launch)
+    1. Run: microclaw config
+       (or run microclaw start and follow auto-config on first launch)
     2. Edit microclaw.config.yaml with required values:
 
        telegram_bot_token    Bot token from @BotFather
@@ -57,7 +60,7 @@ CONFIG FILE (microclaw.config.yaml):
       telegram_bot_token     Telegram bot token from @BotFather
       bot_username           Bot username without @
       llm_provider           Provider preset (default: anthropic)
-      api_key                LLM API key
+      api_key                LLM API key (optional when llm_provider=ollama)
       model                  Model name (auto-detected from provider if empty)
       llm_base_url           Custom base URL (optional)
 
@@ -90,7 +93,8 @@ EXAMPLES:
     microclaw gateway install Install and enable gateway service
     microclaw gateway status Show gateway service status
     microclaw gateway logs 100 Show last 100 lines of gateway logs
-    microclaw setup          Run interactive setup wizard
+    microclaw config         Run interactive Q&A config flow
+    microclaw setup          Run full-screen setup wizard
     microclaw version        Show version
     microclaw help           Show this message
 
@@ -188,6 +192,15 @@ async fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        Some("config") => {
+            let saved = config_wizard::run_config_wizard()?;
+            if saved {
+                println!("Config saved");
+            } else {
+                println!("Config canceled");
+            }
+            return Ok(());
+        }
         Some("version" | "--version" | "-V") => {
             print_version();
             return Ok(());
@@ -207,11 +220,11 @@ async fn main() -> anyhow::Result<()> {
         Ok(c) => c,
         Err(MicroClawError::Config(e)) => {
             eprintln!("Config missing/invalid: {e}");
-            eprintln!("Launching setup wizard...");
-            let saved = setup::run_setup_wizard()?;
+            eprintln!("Launching interactive config...");
+            let saved = config_wizard::run_config_wizard()?;
             if !saved {
                 return Err(anyhow::anyhow!(
-                    "setup canceled and config is still incomplete"
+                    "config canceled and config is still incomplete"
                 ));
             }
             Config::load()?

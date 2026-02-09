@@ -60,6 +60,13 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
         models: &["claude-sonnet-4-5-20250929", "claude-opus-4-6-20260205"],
     },
     ProviderPreset {
+        id: "ollama",
+        label: "Ollama (local)",
+        protocol: ProviderProtocol::OpenAiCompat,
+        default_base_url: "http://127.0.0.1:11434/v1",
+        models: &["llama3.2", "qwen2.5-coder:7b", "mistral"],
+    },
+    ProviderPreset {
         id: "google",
         label: "Google DeepMind",
         protocol: ProviderProtocol::OpenAiCompat,
@@ -417,6 +424,9 @@ impl SetupApp {
 
     fn validate_local(&self) -> Result<(), MicroClawError> {
         for field in &self.fields {
+            if field.key == "LLM_API_KEY" && self.field_value("LLM_PROVIDER") == "ollama" {
+                continue;
+            }
             if field.required && field.value.trim().is_empty() {
                 return Err(MicroClawError::Config(format!("{} is required", field.key)));
             }
@@ -826,12 +836,14 @@ fn perform_online_validation(
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "hi"}]
         });
-        let resp = client
+        let mut req = client
             .post(format!("{base}/chat/completions"))
-            .bearer_auth(api_key)
             .header("content-type", "application/json")
-            .body(body.to_string())
-            .send()?;
+            .body(body.to_string());
+        if !api_key.trim().is_empty() {
+            req = req.bearer_auth(api_key);
+        }
+        let resp = req.send()?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().unwrap_or_default();
@@ -885,7 +897,9 @@ fn save_config_yaml(
     yaml.push_str("# Bot username without @\n");
     yaml.push_str(&format!("bot_username: \"{}\"\n\n", get("BOT_USERNAME")));
 
-    yaml.push_str("# LLM provider (anthropic, openai, openrouter, deepseek, google, etc.)\n");
+    yaml.push_str(
+        "# LLM provider (anthropic, ollama, openai, openrouter, deepseek, google, etc.)\n",
+    );
     yaml.push_str(&format!("llm_provider: \"{}\"\n", get("LLM_PROVIDER")));
     yaml.push_str("# API key for LLM provider\n");
     yaml.push_str(&format!("api_key: \"{}\"\n", get("LLM_API_KEY")));

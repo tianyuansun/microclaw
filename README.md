@@ -203,7 +203,7 @@ Publish both installer mode (GitHub Release asset used by `install.sh`) and Home
 
 ## Setup
 
-> **New:** MicroClaw now includes an interactive setup wizard (`microclaw setup`) and will auto-launch it on first `start` when required config is missing.
+> **New:** MicroClaw now includes an interactive Q&A config flow (`microclaw config`) and will auto-launch it on first `start` when required config is missing.
 
 ### 1. Create a Telegram bot
 
@@ -229,27 +229,34 @@ Choose a provider and create an API key:
 - OpenAI: [platform.openai.com](https://platform.openai.com/)
 - Or any OpenAI-compatible provider (OpenRouter, DeepSeek, etc.)
 
-### 3. Configure (recommended: setup wizard)
+### 3. Configure (recommended: interactive Q&A)
 
 ```sh
-microclaw setup
+microclaw config
 ```
 
 <!-- Setup wizard screenshot placeholder -->
 <!-- Replace with real screenshot later -->
 ![Setup Wizard (placeholder)](screenshots/setup-wizard.png)
 
-The wizard provides:
-- Interactive terminal UI (field navigation + inline help)
-- Provider/model pickers with visible lists (`Enter` to open list, `↑/↓` to select, `Enter` to confirm)
-- Local validation (required fields, timezone, data dir write test)
-- Online validation (Telegram `getMe`, LLM API reachability)
+The `config` flow provides:
+- Question-by-question prompts with defaults (`Enter` to confirm quickly)
+- Provider selection + model selection (numbered choices with custom override)
+- Better Ollama UX: local model auto-detection + sensible local defaults
 - Safe `microclaw.config.yaml` save with automatic backup
+- Auto-created directories for `data_dir` and `working_dir`
+
+If you prefer the full-screen TUI, you can still run:
+
+```sh
+microclaw setup
+```
 
 Provider presets available in the wizard:
 - `openai`
 - `openrouter`
 - `anthropic`
+- `ollama`
 - `google`
 - `alibaba`
 - `deepseek`
@@ -265,6 +272,8 @@ Provider presets available in the wizard:
 - `huggingface`
 - `together`
 - `custom` (manual provider/model/base URL)
+
+For Ollama, `llm_base_url` defaults to `http://127.0.0.1:11434/v1`, `api_key` is optional, and the interactive config flow can auto-detect locally installed models.
 
 You can still configure manually with `microclaw.config.yaml`:
 
@@ -317,7 +326,7 @@ All configuration is via `microclaw.config.yaml`:
 | Key | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `telegram_bot_token` | Yes | -- | Telegram bot token from BotFather |
-| `api_key` | Yes | -- | LLM API key |
+| `api_key` | Yes* | -- | LLM API key (`ollama` can leave this empty) |
 | `bot_username` | Yes | -- | Bot username (without @) |
 | `llm_provider` | No | `anthropic` | Provider preset ID (or custom ID). `anthropic` uses native Anthropic API, others use OpenAI-compatible API |
 | `model` | No | provider-specific | Model name |
@@ -333,7 +342,7 @@ All configuration is via `microclaw.config.yaml`:
 
 ### Supported `llm_provider` values
 
-`openai`, `openrouter`, `anthropic`, `google`, `alibaba`, `deepseek`, `moonshot`, `mistral`, `azure`, `bedrock`, `zhipu`, `minimax`, `cohere`, `tencent`, `xai`, `huggingface`, `together`, `custom`.
+`openai`, `openrouter`, `anthropic`, `ollama`, `google`, `alibaba`, `deepseek`, `moonshot`, `mistral`, `azure`, `bedrock`, `zhipu`, `minimax`, `cohere`, `tencent`, `xai`, `huggingface`, `together`, `custom`.
 
 ## Group chats
 

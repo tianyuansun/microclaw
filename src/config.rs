@@ -152,18 +152,19 @@ impl Config {
 
         // No config file found at all
         Err(MicroClawError::Config(
-            "No microclaw.config.yaml found. Run `microclaw setup` to create one.".into(),
+            "No microclaw.config.yaml found. Run `microclaw config` to create one.".into(),
         ))
     }
 
     /// Apply post-deserialization normalization and validation.
-    fn post_deserialize(&mut self) -> Result<(), MicroClawError> {
+    pub(crate) fn post_deserialize(&mut self) -> Result<(), MicroClawError> {
         self.llm_provider = self.llm_provider.trim().to_lowercase();
 
         // Apply provider-specific default model if empty
         if self.model.is_empty() {
             self.model = match self.llm_provider.as_str() {
                 "anthropic" => "claude-sonnet-4-5-20250929".into(),
+                "ollama" => "llama3.2".into(),
                 _ => "gpt-5.2".into(),
             };
         }
@@ -189,7 +190,7 @@ impl Config {
                 "At least one of telegram_bot_token or discord_bot_token must be set".into(),
             ));
         }
-        if self.api_key.is_empty() {
+        if self.api_key.is_empty() && self.llm_provider != "ollama" {
             return Err(MicroClawError::Config("api_key is required".into()));
         }
 
@@ -379,6 +380,14 @@ mod tests {
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.model, "gpt-5.2");
+    }
+
+    #[test]
+    fn test_post_deserialize_ollama_default_model_and_empty_key() {
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: ollama\n";
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        config.post_deserialize().unwrap();
+        assert_eq!(config.model, "llama3.2");
     }
 
     #[test]

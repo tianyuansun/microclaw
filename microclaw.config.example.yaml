@@ -6,7 +6,7 @@ telegram_bot_token: ""
 # Bot username without @
 bot_username: ""
 
-# LLM provider (anthropic, openai, openrouter, deepseek, google, etc.)
+# LLM provider (anthropic, ollama, openai, openrouter, deepseek, google, etc.)
 llm_provider: "anthropic"
 # API key for LLM provider
 api_key: ""
