@@ -21,4 +21,3 @@ pub mod transcribe;
 pub mod web;
 pub use channels::discord;
 pub use channels::telegram;
-pub use channels::whatsapp;

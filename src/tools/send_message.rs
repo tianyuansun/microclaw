@@ -141,105 +141,6 @@ impl SendMessageTool {
             None => format!("[attachment:{}]", file_path.display()),
         })
     }
-
-    async fn send_whatsapp_attachment(
-        &self,
-        chat_id: i64,
-        file_path: PathBuf,
-        caption: Option<String>,
-    ) -> Result<String, String> {
-        let cfg = self
-            .config
-            .as_ref()
-            .ok_or_else(|| "send_message config unavailable".to_string())?;
-        let access_token = cfg
-            .whatsapp_access_token
-            .as_deref()
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| "whatsapp_access_token not configured".to_string())?;
-        let phone_number_id = cfg
-            .whatsapp_phone_number_id
-            .as_deref()
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| "whatsapp_phone_number_id not configured".to_string())?;
-
-        let filename = file_path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or("attachment.bin")
-            .to_string();
-        let bytes = tokio::fs::read(&file_path)
-            .await
-            .map_err(|e| format!("Failed to read attachment file: {e}"))?;
-
-        let upload_url = format!("https://graph.facebook.com/v23.0/{phone_number_id}/media");
-        let form = reqwest::multipart::Form::new()
-            .text("messaging_product", "whatsapp")
-            .part(
-                "file",
-                reqwest::multipart::Part::bytes(bytes)
-                    .file_name(filename.clone())
-                    .mime_str("application/octet-stream")
-                    .map_err(|e| format!("Invalid attachment mime: {e}"))?,
-            );
-        let upload_resp = self
-            .http_client
-            .post(upload_url)
-            .bearer_auth(access_token)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to upload WhatsApp media: {e}"))?;
-        if !upload_resp.status().is_success() {
-            let status = upload_resp.status();
-            let body = upload_resp.text().await.unwrap_or_default();
-            return Err(format!(
-                "Failed to upload WhatsApp media: HTTP {status} {}",
-                body.chars().take(300).collect::<String>()
-            ));
-        }
-        let upload_json: serde_json::Value = upload_resp
-            .json()
-            .await
-            .map_err(|e| format!("Invalid WhatsApp media upload response: {e}"))?;
-        let media_id = upload_json
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "WhatsApp media upload did not return id".to_string())?;
-
-        let mut document = json!({ "id": media_id, "filename": filename });
-        if let Some(c) = &caption {
-            document["caption"] = json!(c);
-        }
-        let payload = json!({
-            "messaging_product": "whatsapp",
-            "to": chat_id.to_string(),
-            "type": "document",
-            "document": document,
-        });
-        let send_url = format!("https://graph.facebook.com/v23.0/{phone_number_id}/messages");
-        let send_resp = self
-            .http_client
-            .post(send_url)
-            .bearer_auth(access_token)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to send WhatsApp attachment: {e}"))?;
-        if !send_resp.status().is_success() {
-            let status = send_resp.status();
-            let body = send_resp.text().await.unwrap_or_default();
-            return Err(format!(
-                "Failed to send WhatsApp attachment: HTTP {status} {}",
-                body.chars().take(300).collect::<String>()
-            ));
-        }
-
-        Ok(match caption {
-            Some(c) => format!("[attachment:{}] {}", file_path.display(), c),
-            None => format!("[attachment:{}]", file_path.display()),
-        })
-    }
 }
 
 #[async_trait]
@@ -251,7 +152,7 @@ impl Tool for SendMessageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "send_message".into(),
-            description: "Send a message mid-conversation. Supports text for all channels, and attachments for Telegram/Discord/WhatsApp via attachment_path.".into(),
+            description: "Send a message mid-conversation. Supports text for all channels, and attachments for Telegram/Discord via attachment_path.".into(),
             input_schema: schema_object(
                 json!({
                     "chat_id": {
@@ -338,10 +239,6 @@ impl Tool for SendMessageTool {
                 }
                 ChatChannel::Discord => {
                     self.send_discord_attachment(chat_id, file_path.clone(), used_caption.clone())
-                        .await
-                }
-                ChatChannel::WhatsApp => {
-                    self.send_whatsapp_attachment(chat_id, file_path.clone(), used_caption.clone())
                         .await
                 }
                 ChatChannel::Web => {
@@ -513,27 +410,6 @@ mod tests {
         let result = tool
             .execute(json!({
                 "chat_id": 123,
-                "attachment_path": attachment.to_string_lossy(),
-            }))
-            .await;
-        assert!(result.is_error);
-        assert!(result.content.contains("config unavailable"));
-        cleanup(&dir);
-    }
-
-    #[tokio::test]
-    async fn test_send_attachment_whatsapp_without_config_fails_fast() {
-        let (db, dir) = test_db();
-        db.upsert_chat(861234567890i64, Some("wa"), "whatsapp")
-            .unwrap();
-
-        let attachment = dir.join("sample.txt");
-        std::fs::write(&attachment, "hello").unwrap();
-
-        let tool = SendMessageTool::new(Some(Bot::new("123456:TEST_TOKEN")), db, "bot".into());
-        let result = tool
-            .execute(json!({
-                "chat_id": 861234567890i64,
                 "attachment_path": attachment.to_string_lossy(),
             }))
             .await;

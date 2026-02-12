@@ -47,9 +47,6 @@ fn default_max_session_messages() -> usize {
 fn default_compact_keep_recent() -> usize {
     20
 }
-fn default_whatsapp_webhook_port() -> u16 {
-    8080
-}
 fn default_control_chat_ids() -> Vec<i64> {
     Vec::new()
 }
@@ -129,14 +126,6 @@ pub struct Config {
     pub max_session_messages: usize,
     #[serde(default = "default_compact_keep_recent")]
     pub compact_keep_recent: usize,
-    #[serde(default)]
-    pub whatsapp_access_token: Option<String>,
-    #[serde(default)]
-    pub whatsapp_phone_number_id: Option<String>,
-    #[serde(default)]
-    pub whatsapp_verify_token: Option<String>,
-    #[serde(default = "default_whatsapp_webhook_port")]
-    pub whatsapp_webhook_port: u16,
     #[serde(default)]
     pub discord_bot_token: Option<String>,
     #[serde(default)]
@@ -291,25 +280,10 @@ impl Config {
             .as_deref()
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
-        let has_whatsapp = self
-            .whatsapp_access_token
-            .as_deref()
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-            && self
-                .whatsapp_phone_number_id
-                .as_deref()
-                .map(|v| !v.trim().is_empty())
-                .unwrap_or(false)
-            && self
-                .whatsapp_verify_token
-                .as_deref()
-                .map(|v| !v.trim().is_empty())
-                .unwrap_or(false);
 
-        if !(has_telegram || has_discord || has_whatsapp || self.web_enabled) {
+        if !(has_telegram || has_discord || self.web_enabled) {
             return Err(MicroClawError::Config(
-                "At least one channel must be enabled: telegram_bot_token, discord_bot_token, web_enabled=true, or full WhatsApp credentials".into(),
+                "At least one channel must be enabled: telegram_bot_token, discord_bot_token, or web_enabled=true".into(),
             ));
         }
         if self.api_key.is_empty() && self.llm_provider != "ollama" {
@@ -354,10 +328,6 @@ mod tests {
             control_chat_ids: vec![],
             max_session_messages: 40,
             compact_keep_recent: 20,
-            whatsapp_access_token: None,
-            whatsapp_phone_number_id: None,
-            whatsapp_verify_token: None,
-            whatsapp_webhook_port: 8080,
             discord_bot_token: None,
             discord_allowed_channels: vec![],
             show_thinking: false,
@@ -606,10 +576,6 @@ allowed_groups: [123, 456]
 control_chat_ids: [999]
 max_session_messages: 60
 compact_keep_recent: 30
-whatsapp_access_token: wa_token
-whatsapp_phone_number_id: phone_id
-whatsapp_verify_token: verify
-whatsapp_webhook_port: 9090
 discord_bot_token: discord_tok
 discord_allowed_channels: [111, 222]
 "#;
@@ -621,7 +587,6 @@ discord_allowed_channels: [111, 222]
         assert_eq!(config.control_chat_ids, vec![999]);
         assert_eq!(config.max_session_messages, 60);
         assert_eq!(config.compact_keep_recent, 30);
-        assert_eq!(config.whatsapp_webhook_port, 9090);
         assert_eq!(config.discord_allowed_channels, vec![111, 222]);
     }
 

@@ -703,4 +703,15 @@ html:not(.dark) .mc-msg-time {
 *::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
   background-clip: content-box;
+}.mc-settings-nav-item {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.mc-settings-nav-item:hover {
+  background: color-mix(in srgb, var(--mc-accent) 14%, transparent);
 }

@@ -393,6 +393,12 @@ struct UpdateConfigRequest {
     max_tool_iterations: Option<usize>,
     max_document_size_mb: Option<u64>,
     working_dir_isolation: Option<WorkingDirIsolation>,
+
+    telegram_bot_token: Option<String>,
+    bot_username: Option<String>,
+    discord_bot_token: Option<String>,
+    discord_allowed_channels: Option<Vec<u64>>,
+
     show_thinking: Option<bool>,
     web_enabled: Option<bool>,
     web_host: Option<String>,
@@ -423,12 +429,6 @@ fn redact_config(config: &Config) -> serde_json::Value {
     }
     if cfg.openai_api_key.is_some() {
         cfg.openai_api_key = Some("***".into());
-    }
-    if cfg.whatsapp_access_token.is_some() {
-        cfg.whatsapp_access_token = Some("***".into());
-    }
-    if cfg.whatsapp_verify_token.is_some() {
-        cfg.whatsapp_verify_token = Some("***".into());
     }
     if cfg.discord_bot_token.is_some() {
         cfg.discord_bot_token = Some("***".into());
@@ -507,6 +507,19 @@ async fn api_update_config(
     if let Some(v) = body.working_dir_isolation {
         cfg.working_dir_isolation = v;
     }
+    if let Some(v) = body.telegram_bot_token {
+        cfg.telegram_bot_token = v;
+    }
+    if let Some(v) = body.bot_username {
+        cfg.bot_username = v;
+    }
+    if let Some(v) = body.discord_bot_token {
+        cfg.discord_bot_token = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = body.discord_allowed_channels {
+        cfg.discord_allowed_channels = v;
+    }
+
     if let Some(v) = body.show_thinking {
         cfg.show_thinking = v;
     }
@@ -1408,10 +1421,6 @@ mod tests {
             control_chat_ids: vec![],
             max_session_messages: 40,
             compact_keep_recent: 20,
-            whatsapp_access_token: None,
-            whatsapp_phone_number_id: None,
-            whatsapp_verify_token: None,
-            whatsapp_webhook_port: 8080,
             discord_bot_token: None,
             discord_allowed_channels: vec![],
             show_thinking: false,
