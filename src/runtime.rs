@@ -53,6 +53,7 @@ pub async fn run(
     });
 
     crate::scheduler::spawn_scheduler(state.clone());
+    crate::scheduler::spawn_reflector(state.clone());
     if let Some(ref token) = state.config.discord_bot_token {
         if !token.trim().is_empty() {
             let discord_state = state.clone();

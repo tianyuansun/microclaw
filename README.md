@@ -15,12 +15,12 @@
   <img src="screenshots/screenshot2.png" width="45%" />
 </p>
 
-An agentic AI assistant for chat surfaces, inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) and incorporating some of its design ideas. MicroClaw is Telegram/Discord/Web-first and works with multiple LLM providers (Anthropic + OpenAI-compatible APIs). It supports full tool execution: run shell commands, read/write/edit files, search codebases, browse the web, schedule tasks, and maintain persistent memory across conversations.
+An agentic AI assistant for chat surfaces, inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) and incorporating some of its design ideas. MicroClaw uses a channel-agnostic core with platform adapters: it currently supports Telegram, Discord, and Web, and is designed to add more platforms over time. It works with multiple LLM providers (Anthropic + OpenAI-compatible APIs) and supports full tool execution: run shell commands, read/write/edit files, search codebases, browse the web, schedule tasks, and maintain persistent memory across conversations.
 
 ## How it works
 
 ```
-Chat message (Telegram)
+Chat message (via platform adapter)
     |
     v
  Store in SQLite --> Load chat history + memory
@@ -54,13 +54,14 @@ For a deeper dive into the architecture and design decisions, read: **[Building 
 - **Sub-agent** -- delegate self-contained sub-tasks to a parallel agent with restricted tools
 - **Agent skills** -- extensible skill system ([Anthropic Skills](https://github.com/anthropics/skills) compatible); skills are auto-discovered from `microclaw.data/skills/` and activated on demand
 - **Plan & execute** -- todo list tools for breaking down complex tasks, tracking progress step by step
+- **Platform-extensible architecture** -- shared agent loop + tool system + storage, with platform adapters for channel-specific ingress/egress
 - **Web search** -- search the web via DuckDuckGo and fetch/parse web pages
 - **Scheduled tasks** -- cron-based recurring tasks and one-time scheduled tasks, managed through natural language
 - **Mid-conversation messaging** -- the agent can send intermediate messages before its final response
-- **Group chat catch-up** -- when mentioned in a group, the bot reads all messages since its last reply (not just the last N)
+- **Mention catch-up (Telegram groups)** -- when mentioned in a Telegram group, the bot reads all messages since its last reply (not just the last N)
 - **Continuous typing indicator** -- typing indicator stays active for the full duration of processing
 - **Persistent memory** -- CLAUDE.md files at global and per-chat scopes, loaded into every request
-- **Message splitting** -- long responses are automatically split at newline boundaries to fit channel limits (Telegram)
+- **Message splitting** -- long responses are automatically split at newline boundaries to fit channel limits (Telegram 4096 / Discord 2000)
 
 ## Tools
 
@@ -309,15 +310,18 @@ Publish both installer mode (GitHub Release asset used by `install.sh`) and Home
 
 > **New:** MicroClaw now includes an interactive setup wizard (`microclaw setup`) and will auto-launch it on first `start` when required config is missing.
 
-### 1. Create a Telegram bot
+### 1. Create channel bot credentials
 
+Enable at least one channel: Telegram, Discord, or Web UI.
+
+Telegram (optional):
 1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
 2. Send `/newbot`
 3. Enter a display name for your bot (e.g. `My MicroClaw`)
 4. Enter a username (must end in `bot`, e.g. `my_microclaw_bot`)
-5. BotFather will reply with a token like `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` -- save this
+5. BotFather will reply with a token like `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` -- save this as `telegram_bot_token`
 
-**Recommended BotFather settings** (optional but useful):
+Recommended BotFather settings (optional but useful):
 - `/setdescription` -- set a short description shown in the bot's profile
 - `/setcommands` -- register commands so users see them in the menu:
   ```
@@ -325,6 +329,13 @@ Publish both installer mode (GitHub Release asset used by `install.sh`) and Home
   skills - List available agent skills
   ```
 - `/setprivacy` -- set to `Disable` if you want the bot to see all group messages (not just @mentions)
+
+Discord (optional):
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications)
+2. Create an application and add a bot
+3. Copy the bot token and save it as `discord_bot_token`
+4. Invite the bot to your server with `Send Messages`, `Read Message History`, and mention permissions
+5. Optional: set `discord_allowed_channels` to restrict where the bot can reply
 
 ### 2. Get an LLM API key
 
@@ -435,9 +446,11 @@ All configuration is via `microclaw.config.yaml`:
 
 | Key | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `telegram_bot_token` | Yes | -- | Telegram bot token from BotFather |
+| `telegram_bot_token` | No* | -- | Telegram bot token from BotFather |
+| `discord_bot_token` | No* | -- | Discord bot token from Discord Developer Portal |
+| `discord_allowed_channels` | No | `[]` | Discord channel ID allowlist; empty means no channel restriction |
 | `api_key` | Yes* | -- | LLM API key (`ollama` can leave this empty; `openai-codex` supports OAuth or `api_key`) |
-| `bot_username` | Yes | -- | Bot username (without @) |
+| `bot_username` | No | -- | Telegram bot username (without @; needed for Telegram group mentions) |
 | `llm_provider` | No | `anthropic` | Provider preset ID (or custom ID). `anthropic` uses native Anthropic API, others use OpenAI-compatible API |
 | `model` | No | provider-specific | Model name |
 | `model_prices` | No | `[]` | Optional per-model pricing table (USD per 1M tokens) used by `/usage` cost estimates |
@@ -453,15 +466,20 @@ All configuration is via `microclaw.config.yaml`:
 | `max_session_messages` | No | `40` | Message count threshold that triggers context compaction |
 | `compact_keep_recent` | No | `20` | Number of recent messages to keep verbatim during compaction |
 
+`*` At least one channel must be enabled: `telegram_bot_token`, `discord_bot_token`, or `web_enabled: true`.
+
 ### Supported `llm_provider` values
 
 `openai`, `openai-codex`, `openrouter`, `anthropic`, `ollama`, `google`, `alibaba`, `deepseek`, `moonshot`, `mistral`, `azure`, `bedrock`, `zhipu`, `minimax`, `cohere`, `tencent`, `xai`, `huggingface`, `together`, `custom`.
 
-## Group chats
+## Platform behavior
 
-In private chats, the bot responds to every message. In groups, it only responds when mentioned with `@bot_username`. All messages in groups are still stored for context.
+- Telegram private chats: respond to every message.
+- Telegram groups: respond only when mentioned with `@bot_username`; all group messages are still stored for context.
+- Discord DMs: respond to every message.
+- Discord server channels: respond on @mention; optionally constrained by `discord_allowed_channels`.
 
-**Catch-up behavior:** When mentioned in a group, the bot loads all messages since its last reply in that group (instead of just the last N messages). This means it catches up on everything it missed, making group interactions much more contextual.
+**Catch-up behavior (Telegram groups):** When mentioned in a group, the bot loads all messages since its last reply in that group (instead of just the last N messages). This means it catches up on everything it missed, making group interactions much more contextual.
 
 ## Multi-chat permission model
 
@@ -559,6 +577,18 @@ Key design decisions:
 - **Message splitting** for long channel responses
 - **`Arc<Database>`** shared across tools and scheduler for thread-safe DB access
 - **Continuous typing indicator** via a spawned task that sends typing action every 4 seconds
+
+## Adding a New Platform Adapter
+
+MicroClaw's core loop is channel-agnostic. A new platform integration should mainly be an adapter layer:
+
+1. Implement inbound mapping from platform events into canonical chat inputs (`chat_id`, sender, chat type, content blocks).
+2. Reuse the shared `process_with_claude` flow instead of creating a platform-specific agent loop.
+3. Implement outbound delivery for text and attachment responses (including platform-specific length limits).
+4. Define mention/reply trigger rules for group/server contexts.
+5. Preserve session key stability so resume/compaction/memory continue to work across restarts.
+6. Apply existing authorization and safety boundaries (`control_chat_ids`, tool constraints, path guard).
+7. Add adapter-specific integration tests under `TEST.md` patterns (DM/private, group/server mention, `/reset`, limits, failures).
 
 ## Documentation
 

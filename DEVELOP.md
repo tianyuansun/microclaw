@@ -13,7 +13,7 @@ cargo run -- start
 ## Prerequisites
 
 - Rust 1.70+ (2021 edition)
-- A Telegram bot token (from @BotFather)
+- At least one enabled channel adapter (Telegram bot token from @BotFather, Discord bot token from Discord Developer Portal, or Web UI)
 - An Anthropic API key
 
 No other external dependencies. SQLite is bundled via `rusqlite`.
@@ -22,7 +22,7 @@ No other external dependencies. SQLite is bundled via `rusqlite`.
 
 ```
 src/
-    main.rs              # Entry point. Parses CLI args, initializes subsystems, starts bot.
+    main.rs              # Entry point. Parses CLI args, initializes subsystems, starts platform runtimes.
     config.rs            # Config struct. All settings loaded from microclaw.config.yaml.
     error.rs             # MicroClawError enum (thiserror). Centralized error types.
     telegram.rs          # Core orchestration:
@@ -33,6 +33,7 @@ src/
                          #   - Continuous typing indicator
                          #   - Group chat catch-up logic
                          #   - Response splitting
+    discord.rs           # Discord message handler (serenity gateway), reuses process_with_claude
     claude.rs            # Anthropic Messages API client:
                          #   - Request/response types with serde
                          #   - HTTP calls with retry on 429
@@ -62,7 +63,7 @@ src/
         memory.rs        # read_memory / write_memory tools
         web_search.rs    # DuckDuckGo HTML search, regex result parsing
         web_fetch.rs     # URL fetching, HTML tag stripping, 20KB limit
-        send_message.rs  # Mid-conversation Telegram messaging
+        send_message.rs  # Mid-conversation messaging (Telegram/Discord)
         schedule.rs      # 5 scheduling tools (create/list/pause/resume/cancel)
         sub_agent.rs     # Sub-agent tool with restricted tool registry (9 tools)
 ```
@@ -72,7 +73,7 @@ src/
 ### Data flow
 
 ```
-Telegram message
+Platform message (via adapter)
        |
        v
     Store in SQLite (message + chat metadata)
@@ -112,11 +113,13 @@ Telegram message
     Abort typing indicator
        |
        v
-    Send response (split if > 4096 chars)
+    Send response (split at channel limits: Telegram 4096 / Discord 2000)
        |
        v
     Store bot response in SQLite
 ```
+
+The same core loop is reused across adapters. Adding a new platform should primarily require a new ingress/egress adapter that maps platform events into the shared `process_with_claude` flow.
 
 ### Key types
 
@@ -133,6 +136,7 @@ Telegram message
 
 `AppState` is wrapped in `Arc` and shared:
 - Telegram handler has `Arc<AppState>` via dptree dependencies
+- Discord handler has `Arc<AppState>` via serenity event handler state
 - Scheduler gets `Arc<AppState>` at spawn time
 - Tools that need `Bot` or `Database` hold their own clones/arcs (passed at construction)
 
@@ -150,7 +154,7 @@ Telegram message
 **chats:**
 | Column | Type | Description |
 |--------|------|-------------|
-| chat_id | INTEGER PK | Telegram chat ID |
+| chat_id | INTEGER PK | Channel-scoped chat ID |
 | chat_title | TEXT | Chat title (nullable) |
 | chat_type | TEXT | "private" or "group" |
 | last_message_time | TEXT | ISO 8601 timestamp |
@@ -159,7 +163,7 @@ Telegram message
 | Column | Type | Description |
 |--------|------|-------------|
 | id | TEXT | Message ID (PK with chat_id) |
-| chat_id | INTEGER | Telegram chat ID |
+| chat_id | INTEGER | Channel-scoped chat ID |
 | sender_name | TEXT | Username or first name |
 | content | TEXT | Message text |
 | is_from_bot | INTEGER | 0 or 1 |
@@ -181,7 +185,7 @@ Telegram message
 **sessions:**
 | Column | Type | Description |
 |--------|------|-------------|
-| chat_id | INTEGER PK | Telegram chat ID |
+| chat_id | INTEGER PK | Channel-scoped chat ID |
 | messages_json | TEXT | Serialized Vec<Message> JSON (full conversation state) |
 | updated_at | TEXT | ISO 8601 timestamp of last save |
 
@@ -267,6 +271,25 @@ And pass it in `ToolRegistry::new()`:
 Box::new(my_tool::MyTool::new(db.clone())),
 ```
 
+## Adding a new platform adapter
+
+The core agent flow is already shared. New platform support should be implemented as an adapter around that core:
+
+1. Add a new runtime module (for example `src/<platform>.rs`) that listens to platform events.
+2. Normalize incoming platform messages into the canonical fields used by persistence and `process_with_claude`:
+   - stable `chat_id`
+   - `chat_type` (`private`/`group`-like semantics)
+   - sender display name
+   - text/media blocks
+3. Reuse `process_with_claude(state, chat_id, sender, chat_type, override_prompt)` for inference/tool loop/session handling.
+4. Implement outbound reply sending with:
+   - platform length splitting policy
+   - mention semantics for group/server channels
+   - attachment support parity with `send_message` where applicable
+5. Keep chat identity stable across restarts so `sessions`, `messages`, scheduler, and memory scopes remain consistent.
+6. Enforce existing authorization boundaries (for example `control_chat_ids`) in any platform-specific entry points.
+7. Add end-to-end tests to `TEST.md` mirroring existing platform suites (DM/private, group mention, reset, limits, failure handling).
+
 ## Scheduler internals
 
 The scheduler is a `tokio::spawn` task started in `run_bot()`. Every 60 seconds it:
@@ -325,6 +348,7 @@ The release binary is fully self-contained -- no runtime dependencies, no databa
 | Crate | Version | Purpose |
 |-------|---------|---------|
 | teloxide | 0.17 | Telegram Bot API |
+| serenity | 0.12 | Discord Gateway/API |
 | tokio | 1 | Async runtime |
 | reqwest | 0.12 | HTTP client (Anthropic API, web fetch/search) |
 | rusqlite | 0.32 | SQLite (bundled) |

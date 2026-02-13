@@ -81,6 +81,12 @@ fn default_web_session_idle_ttl_seconds() -> u64 {
 fn default_model_prices() -> Vec<ModelPrice> {
     Vec::new()
 }
+fn default_reflector_enabled() -> bool {
+    true
+}
+fn default_reflector_interval_mins() -> u64 {
+    15
+}
 fn is_local_web_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     h == "127.0.0.1" || h == "localhost" || h == "::1"
@@ -166,6 +172,10 @@ pub struct Config {
     pub web_session_idle_ttl_seconds: u64,
     #[serde(default = "default_model_prices")]
     pub model_prices: Vec<ModelPrice>,
+    #[serde(default = "default_reflector_enabled")]
+    pub reflector_enabled: bool,
+    #[serde(default = "default_reflector_interval_mins")]
+    pub reflector_interval_mins: u64,
 }
 
 impl Config {
@@ -432,6 +442,8 @@ mod tests {
             web_run_history_limit: 512,
             web_session_idle_ttl_seconds: 300,
             model_prices: vec![],
+            reflector_enabled: true,
+            reflector_interval_mins: 15,
         }
     }
 

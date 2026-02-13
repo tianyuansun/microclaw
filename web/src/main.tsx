@@ -129,6 +129,8 @@ const DEFAULT_CONFIG_VALUES = {
   web_enabled: true,
   web_host: '127.0.0.1',
   web_port: 10961,
+  reflector_enabled: true,
+  reflector_interval_mins: 15,
 }
 
 const UI_THEME_OPTIONS: { key: UiTheme; label: string; color: string }[] = [
@@ -945,6 +947,8 @@ function App() {
       web_enabled: Boolean(data.config?.web_enabled),
       web_host: String(data.config?.web_host || '127.0.0.1'),
       web_port: Number(data.config?.web_port ?? 10961),
+      reflector_enabled: data.config?.reflector_enabled !== false,
+      reflector_interval_mins: Number(data.config?.reflector_interval_mins ?? DEFAULT_CONFIG_VALUES.reflector_interval_mins),
     })
     setConfigOpen(true)
   }
@@ -1021,6 +1025,12 @@ function App() {
         case 'web_port':
           next.web_port = DEFAULT_CONFIG_VALUES.web_port
           break
+        case 'reflector_enabled':
+          next.reflector_enabled = DEFAULT_CONFIG_VALUES.reflector_enabled
+          break
+        case 'reflector_interval_mins':
+          next.reflector_interval_mins = DEFAULT_CONFIG_VALUES.reflector_interval_mins
+          break
         default:
           break
       }
@@ -1057,6 +1067,8 @@ function App() {
         web_enabled: Boolean(configDraft.web_enabled),
         web_host: String(configDraft.web_host || '127.0.0.1'),
         web_port: Number(configDraft.web_port || 10961),
+        reflector_enabled: configDraft.reflector_enabled !== false,
+        reflector_interval_mins: Number(configDraft.reflector_interval_mins || DEFAULT_CONFIG_VALUES.reflector_interval_mins),
       }
       if (String(configDraft.llm_provider || '').trim().toLowerCase() === 'custom') {
         payload.llm_base_url = String(configDraft.llm_base_url || '').trim() || null
@@ -1306,6 +1318,25 @@ function App() {
                             className={toggleCardClass}
                             style={toggleCardStyle}
                           />
+                          <ConfigToggleCard
+                            label="reflector_enabled"
+                            description={<>Periodically extract structured memories from conversations in the background.</>}
+                            checked={configDraft.reflector_enabled !== false}
+                            onCheckedChange={(checked) => setConfigField('reflector_enabled', checked)}
+                            className={toggleCardClass}
+                            style={toggleCardStyle}
+                          />
+                        </div>
+                        <div className="mt-4 space-y-3">
+                          <ConfigFieldCard label="reflector_interval_mins" description={<>How often (in minutes) the memory reflector runs. Requires restart.</>}>
+                            <TextField.Root
+                              className="mt-2"
+                              type="number"
+                              value={String(configDraft.reflector_interval_mins ?? DEFAULT_CONFIG_VALUES.reflector_interval_mins)}
+                              onChange={(e) => setConfigField('reflector_interval_mins', e.target.value)}
+                              placeholder="15"
+                            />
+                          </ConfigFieldCard>
                         </div>
                       </div>
                     </Tabs.Content>

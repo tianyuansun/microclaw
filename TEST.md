@@ -398,6 +398,51 @@ Since MicroClaw is a multi-platform bot with external dependencies (LLM APIs, Te
 
 ---
 
+## Platform Adapter Template (Future Channels)
+
+Use this checklist when adding a new platform adapter (for example Slack/Feishu/Teams).
+
+### Adapter metadata
+
+- Platform name: `<platform>`
+- Inbound mode: `<webhook|gateway|polling>`
+- Identity key mapping: `<platform chat/channel/user IDs -> stable chat_id>`
+- Reply trigger policy: `<dm always / group mention / allowlist>`
+- Message length limit: `<N chars>`
+- Attachment support: `<yes/no + types>`
+
+### Test matrix
+
+| # | User Story | Steps | Expected |
+|---|-----------|-------|----------|
+| P.1 | Private/DM reply | Send direct message | Bot responds |
+| P.2 | Group/channel no trigger | Send group message without trigger | No reply; message persistence matches policy |
+| P.3 | Group/channel trigger | Mention or trigger bot in group/channel | Bot responds |
+| P.4 | Long response splitting | Ask for response > platform limit | Split correctly at boundary with no truncation |
+| P.5 | Session reset | Send `/reset` equivalent | Session cleared for this platform chat |
+| P.6 | Session resume | Multi-turn chat -> restart bot -> continue | Session restored from DB |
+| P.7 | Attachment ingress | Send supported attachment | Parsed/handled with expected behavior |
+| P.8 | Attachment egress | Trigger `send_message` with attachment | Delivery succeeds or clear error reported |
+| P.9 | Channel allowlist | Configure adapter channel allowlist | Replies limited to configured channels |
+| P.10 | Ignore bot/system messages | Send from another bot/system user | Bot does not self-trigger or loop |
+| P.11 | API failure handling | Simulate platform API/network failure | Error logged; process stays healthy |
+| P.12 | Rate limit handling | Trigger adapter/platform rate limit | Backoff/retry policy works, no crash |
+
+### Persistence and schema checks
+
+- `messages` rows are written with correct `chat_id`, `sender_name`, `is_from_bot`, and timestamp.
+- `sessions` row key remains stable for the same platform conversation across restarts.
+- `chats.chat_type` semantics are consistent with trigger policy.
+- Scheduled task replies route correctly back to the originating platform chat.
+
+### Security and authorization checks
+
+- `control_chat_ids` policy is enforced for cross-chat tools.
+- Tool safety boundaries (path guard, restricted tools) remain unchanged by adapter.
+- Mention parsing cannot be spoofed by plain text edge cases.
+
+---
+
 ## Database Verification
 
 After running tests, verify the database directly:

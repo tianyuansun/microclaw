@@ -69,6 +69,16 @@ pub struct LlmModelUsageSummary {
 }
 
 #[derive(Debug, Clone)]
+pub struct Memory {
+    pub id: i64,
+    pub chat_id: Option<i64>,
+    pub content: String,
+    pub category: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ScheduledTask {
     pub id: i64,
@@ -171,6 +181,16 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_llm_usage_created
                 ON llm_usage_logs(created_at);
+
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memories_chat ON memories(chat_id);
             ",
         )?;
 
@@ -921,6 +941,88 @@ impl Database {
         };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+
+    // --- Memories ---
+
+    pub fn insert_memory(
+        &self,
+        chat_id: Option<i64>,
+        content: &str,
+        category: &str,
+    ) -> Result<i64, MicroClawError> {
+        let conn = self.lock_conn();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memories (chat_id, content, category, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![chat_id, content, category, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_memories_for_context(
+        &self,
+        chat_id: i64,
+        limit: usize,
+    ) -> Result<Vec<Memory>, MicroClawError> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, content, category, created_at, updated_at
+             FROM memories
+             WHERE (chat_id = ?1 OR chat_id IS NULL)
+             ORDER BY updated_at DESC
+             LIMIT ?2",
+        )?;
+        let memories = stmt
+            .query_map(params![chat_id, limit as i64], |row| {
+                Ok(Memory {
+                    id: row.get(0)?,
+                    chat_id: row.get(1)?,
+                    content: row.get(2)?,
+                    category: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(memories)
+    }
+
+    pub fn get_all_memories_for_chat(
+        &self,
+        chat_id: Option<i64>,
+    ) -> Result<Vec<Memory>, MicroClawError> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, content, category, created_at, updated_at
+             FROM memories
+             WHERE (chat_id = ?1 OR (?1 IS NULL AND chat_id IS NULL))",
+        )?;
+        let memories = stmt
+            .query_map(params![chat_id], |row| {
+                Ok(Memory {
+                    id: row.get(0)?,
+                    chat_id: row.get(1)?,
+                    content: row.get(2)?,
+                    category: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(memories)
+    }
+
+    pub fn get_active_chat_ids_since(&self, since: &str) -> Result<Vec<i64>, MicroClawError> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT chat_id FROM messages WHERE timestamp > ?1 AND is_from_bot = 0",
+        )?;
+        let ids = stmt
+            .query_map(params![since], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
 }
 
 #[cfg(test)]
@@ -1591,6 +1693,111 @@ mod tests {
         assert_eq!(by_model[1].model, "claude-b");
         assert_eq!(by_model[1].requests, 1);
         assert_eq!(by_model[1].total_tokens, 10);
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_insert_and_get_memories_for_context() {
+        let (db, dir) = test_db();
+        db.insert_memory(Some(100), "User is a Rust developer", "PROFILE")
+            .unwrap();
+        db.insert_memory(Some(100), "User lives in Tokyo", "PROFILE")
+            .unwrap();
+        db.insert_memory(None, "Global fact", "KNOWLEDGE").unwrap();
+        db.insert_memory(Some(200), "Other chat memory", "EVENT")
+            .unwrap();
+
+        // chat 100 should see its own + global, not chat 200
+        let mems = db.get_memories_for_context(100, 10).unwrap();
+        assert_eq!(mems.len(), 3);
+        let contents: Vec<&str> = mems.iter().map(|m| m.content.as_str()).collect();
+        assert!(contents.contains(&"User is a Rust developer"));
+        assert!(contents.contains(&"User lives in Tokyo"));
+        assert!(contents.contains(&"Global fact"));
+        assert!(!contents.contains(&"Other chat memory"));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_get_memories_for_context_limit() {
+        let (db, dir) = test_db();
+        for i in 0..5 {
+            db.insert_memory(Some(100), &format!("memory {i}"), "KNOWLEDGE")
+                .unwrap();
+        }
+        let mems = db.get_memories_for_context(100, 3).unwrap();
+        assert_eq!(mems.len(), 3);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_get_all_memories_for_chat() {
+        let (db, dir) = test_db();
+        db.insert_memory(Some(100), "chat 100 mem", "PROFILE")
+            .unwrap();
+        db.insert_memory(Some(100), "chat 100 mem 2", "EVENT")
+            .unwrap();
+        db.insert_memory(Some(200), "chat 200 mem", "PROFILE")
+            .unwrap();
+        db.insert_memory(None, "global mem", "KNOWLEDGE").unwrap();
+
+        let mems = db.get_all_memories_for_chat(Some(100)).unwrap();
+        assert_eq!(mems.len(), 2);
+
+        let global = db.get_all_memories_for_chat(None).unwrap();
+        assert_eq!(global.len(), 1);
+        assert_eq!(global[0].content, "global mem");
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_get_active_chat_ids_since() {
+        let (db, dir) = test_db();
+        db.store_message(&StoredMessage {
+            id: "m1".into(),
+            chat_id: 100,
+            sender_name: "alice".into(),
+            content: "hello".into(),
+            is_from_bot: false,
+            timestamp: "2024-06-01T00:00:01Z".into(),
+        })
+        .unwrap();
+        db.store_message(&StoredMessage {
+            id: "m2".into(),
+            chat_id: 200,
+            sender_name: "bob".into(),
+            content: "hi".into(),
+            is_from_bot: false,
+            timestamp: "2024-06-01T00:00:02Z".into(),
+        })
+        .unwrap();
+        // Bot message should not count
+        db.store_message(&StoredMessage {
+            id: "m3".into(),
+            chat_id: 300,
+            sender_name: "bot".into(),
+            content: "bot msg".into(),
+            is_from_bot: true,
+            timestamp: "2024-06-01T00:00:03Z".into(),
+        })
+        .unwrap();
+
+        let ids = db
+            .get_active_chat_ids_since("2024-06-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&100));
+        assert!(ids.contains(&200));
+        assert!(!ids.contains(&300));
+
+        // Before any messages
+        let ids_empty = db
+            .get_active_chat_ids_since("2025-01-01T00:00:00Z")
+            .unwrap();
+        assert!(ids_empty.is_empty());
 
         cleanup(&dir);
     }

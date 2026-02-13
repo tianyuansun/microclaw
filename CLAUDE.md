@@ -1,10 +1,16 @@
 # MicroClaw
 
-MicroClaw is a Rust Telegram bot that connects Claude AI to Telegram with agentic tool execution, web search, scheduled tasks, and persistent memory. Inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) (TypeScript/WhatsApp), incorporating some of its design ideas.
+MicroClaw is a Rust multi-platform chat bot with a channel-agnostic core and platform adapters. It currently supports Telegram, Discord, and Web, and can be extended to more platforms. It provides agentic tool execution, web search, scheduled tasks, and persistent memory. Inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) (TypeScript/WhatsApp), incorporating some of its design ideas.
 
 ## Tech stack
 
 Rust 2021, Tokio, teloxide 0.17, serenity 0.12, Anthropic Messages API (direct HTTP via reqwest), SQLite (rusqlite bundled), cron crate for scheduling.
+
+## Directory overview
+
+- `src/` -- Rust source for the bot binary
+- `web/` -- Built-in Web UI (React + Vite). Compiled to `web/dist/` and embedded into the Rust binary via `include_dir!`. This is the chat interface and settings panel served by microclaw itself at runtime.
+- `website/` -- **Separate git repository** (landing page + documentation site). Not part of the microclaw binary. Contains the public-facing marketing site and docs. Changes here have no effect on the bot.
 
 ## Project layout
 
@@ -26,7 +32,7 @@ Rust 2021, Tokio, teloxide 0.17, serenity 0.12, Anthropic Messages API (direct H
 - `src/tools/web_search.rs` -- DuckDuckGo search
 - `src/tools/browser.rs` -- headless browser automation (agent-browser CLI wrapper)
 - `src/tools/web_fetch.rs` -- URL fetching with HTML stripping
-- `src/tools/send_message.rs` -- mid-conversation Telegram messaging
+- `src/tools/send_message.rs` -- mid-conversation messaging (Telegram/Discord)
 - `src/tools/schedule.rs` -- 5 scheduling tools
 - `src/tools/sub_agent.rs` -- sub-agent tool with restricted tool registry
 
@@ -42,13 +48,13 @@ Rust 2021, Tokio, teloxide 0.17, serenity 0.12, Anthropic Messages API (direct H
 - **Scheduler**: `tokio::spawn` loop, polls DB for due tasks, calls `process_with_claude` with `override_prompt`
 - **Typing**: spawned task sends typing action every 4s, aborted when response is ready
 - **Path guard**: sensitive paths (.ssh, .aws, .env, credentials, etc.) are blocked in file tools via `path_guard` module
-- **Multi-platform**: Telegram (primary), WhatsApp (webhook), Discord (serenity gateway) — all reuse `process_with_claude`
+- **Platform-extensible core**: Telegram/Discord/Web adapters reuse `process_with_claude`; new platforms integrate through the same core loop
 
 ## Build & run
 
 ```sh
 cargo build
-cargo run -- start    # requires config.yaml with telegram_bot_token, api_key, bot_username
+cargo run -- start    # requires config.yaml with at least one enabled channel plus model credentials
 cargo run -- setup    # interactive setup wizard to create config.yaml
 cargo run -- help
 ```

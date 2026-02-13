@@ -380,6 +380,26 @@ impl SetupApp {
                     required: false,
                     secret: false,
                 },
+                Field {
+                    key: "REFLECTOR_ENABLED",
+                    label: "Memory reflector enabled (true/false)",
+                    value: existing
+                        .get("REFLECTOR_ENABLED")
+                        .cloned()
+                        .unwrap_or_else(|| "true".into()),
+                    required: false,
+                    secret: false,
+                },
+                Field {
+                    key: "REFLECTOR_INTERVAL_MINS",
+                    label: "Memory reflector interval (minutes)",
+                    value: existing
+                        .get("REFLECTOR_INTERVAL_MINS")
+                        .cloned()
+                        .unwrap_or_else(|| "15".into()),
+                    required: false,
+                    secret: false,
+                },
             ],
             selected: 0,
             editing: false,
@@ -441,6 +461,14 @@ impl SetupApp {
                     map.insert("DATA_DIR".into(), config.data_dir);
                     map.insert("TIMEZONE".into(), config.timezone);
                     map.insert("WORKING_DIR".into(), config.working_dir);
+                    map.insert(
+                        "REFLECTOR_ENABLED".into(),
+                        config.reflector_enabled.to_string(),
+                    );
+                    map.insert(
+                        "REFLECTOR_INTERVAL_MINS".into(),
+                        config.reflector_interval_mins.to_string(),
+                    );
                     return map;
                 }
             }
@@ -860,6 +888,8 @@ impl SetupApp {
             "DATA_DIR" => "./microclaw.data".into(),
             "TIMEZONE" => "UTC".into(),
             "WORKING_DIR" => "./tmp".into(),
+            "REFLECTOR_ENABLED" => "true".into(),
+            "REFLECTOR_INTERVAL_MINS" => "15".into(),
             _ => String::new(),
         }
     }
@@ -883,7 +913,11 @@ impl SetupApp {
 
     fn section_for_key(key: &str) -> &'static str {
         match key {
-            "DATA_DIR" | "TIMEZONE" | "WORKING_DIR" => "App",
+            "DATA_DIR"
+            | "TIMEZONE"
+            | "WORKING_DIR"
+            | "REFLECTOR_ENABLED"
+            | "REFLECTOR_INTERVAL_MINS" => "App",
             "LLM_PROVIDER" | "LLM_API_KEY" | "LLM_MODEL" | "LLM_BASE_URL" => "Model",
             "ENABLED_CHANNELS" | "TELEGRAM_BOT_TOKEN" | "BOT_USERNAME" | "DISCORD_BOT_TOKEN" => {
                 "Channel"
@@ -897,6 +931,8 @@ impl SetupApp {
             "DATA_DIR" => 0,
             "TIMEZONE" => 1,
             "WORKING_DIR" => 2,
+            "REFLECTOR_ENABLED" => 3,
+            "REFLECTOR_INTERVAL_MINS" => 4,
             "LLM_PROVIDER" => 10,
             "LLM_API_KEY" => 11,
             "LLM_MODEL" => 12,
@@ -1224,6 +1260,24 @@ fn save_config_yaml(
         .cloned()
         .unwrap_or_else(|| "./tmp".into());
     yaml.push_str(&format!("working_dir: \"{}\"\n", working_dir));
+
+    let reflector_enabled = values
+        .get("REFLECTOR_ENABLED")
+        .map(|v| v.trim().to_lowercase())
+        .map(|v| v != "false" && v != "0" && v != "no")
+        .unwrap_or(true);
+    yaml.push_str(
+        "\n# Memory reflector: periodically extracts structured memories from conversations\n",
+    );
+    yaml.push_str(&format!("reflector_enabled: {}\n", reflector_enabled));
+    let reflector_interval = values
+        .get("REFLECTOR_INTERVAL_MINS")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(15);
+    yaml.push_str(&format!(
+        "reflector_interval_mins: {}\n",
+        reflector_interval
+    ));
 
     fs::write(path, yaml)?;
     Ok(backup)

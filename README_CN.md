@@ -14,12 +14,12 @@
   <img src="screenshots/screenshot2.png" width="45%" />
 </p>
 
-一个住在 Telegram 聊天里的 AI 智能助手，灵感来自 [nanoclaw](https://github.com/gavrielc/nanoclaw/)，参考了 nanoclaw 的部分思路。MicroClaw 将 Claude 连接到 Telegram，支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
+一个住在聊天平台里的 AI 智能助手，灵感来自 [nanoclaw](https://github.com/gavrielc/nanoclaw/)，参考了 nanoclaw 的部分思路。MicroClaw 采用“渠道无关核心 + 平台适配器”架构：当前支持 Telegram、Discord 和 Web，后续可持续扩展更多平台。它支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
 
 ## 工作原理
 
 ```
-Telegram 消息
+聊天消息（通过平台适配器接入）
     |
     v
  存入 SQLite --> 加载聊天历史 + 记忆
@@ -53,13 +53,14 @@ Telegram 消息
 - **子代理** -- 将独立子任务委派给有限制工具集的并行代理
 - **技能系统** -- 可扩展的技能系统（兼容 [Anthropic Skills](https://github.com/anthropics/skills) 标准）；技能从 `microclaw.data/skills/` 自动发现，按需激活
 - **计划与执行** -- todo 工具，将复杂任务拆解为步骤，逐步跟踪进度
+- **可扩展的平台架构** -- 共享智能体循环/工具系统/存储层，通过平台适配器处理各渠道差异
 - **网页搜索** -- 通过 DuckDuckGo 搜索和抓取网页
 - **定时任务** -- 基于 cron 的循环任务和一次性定时任务，通过自然语言管理
 - **会话中发消息** -- 智能体可以在最终回复前发送中间进度消息
-- **群聊追赶** -- 在群里被 @ 时，机器人会读取上次回复以来的所有消息
+- **提及追赶（Telegram 群）** -- 在 Telegram 群里被 @ 时，机器人会读取上次回复以来的所有消息
 - **持续输入指示** -- 处理期间持续显示"正在输入"状态
 - **持久化记忆** -- 全局和每个聊天的 CLAUDE.md 文件，每次请求都会加载
-- **消息分割** -- 长回复自动在换行处分割，适配 Telegram 4096 字符限制
+- **消息分割** -- 长回复自动在换行处分割，适配不同平台长度限制（Telegram 4096 / Discord 2000）
 
 ## 工具列表
 
@@ -252,15 +253,18 @@ cp target/release/microclaw /usr/local/bin/
 
 > **新功能：** 现在支持交互式问答配置（`microclaw config`），并且在 `start` 时若缺少必需配置会自动进入配置流程。
 
-### 1. 创建 Telegram 机器人
+### 1. 创建渠道机器人凭据
 
+至少启用一个渠道：Telegram、Discord，或 Web UI。
+
+Telegram（可选）：
 1. 打开 Telegram，搜索 [@BotFather](https://t.me/BotFather)
 2. 发送 `/newbot`
 3. 输入机器人的显示名称（例如 `My MicroClaw`）
 4. 输入用户名（必须以 `bot` 结尾，例如 `my_microclaw_bot`）
-5. BotFather 会回复一个 token，类似 `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` -- 保存好
+5. BotFather 会回复一个 token，类似 `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`，保存为 `telegram_bot_token`
 
-**推荐的 BotFather 设置**（可选但有用）：
+推荐的 BotFather 设置（可选但有用）：
 - `/setdescription` -- 设置机器人简介，显示在机器人资料页
 - `/setcommands` -- 注册命令，用户可以在菜单中看到：
   ```
@@ -269,12 +273,20 @@ cp target/release/microclaw /usr/local/bin/
   ```
 - `/setprivacy` -- 设置为 `Disable`，这样机器人可以看到群里所有消息（而不仅仅是 @提及）
 
-### 2. 获取 Anthropic API Key
+Discord（可选）：
+1. 打开 [Discord Developer Portal](https://discord.com/developers/applications)
+2. 创建应用并添加 Bot
+3. 复制 Bot token，保存为 `discord_bot_token`
+4. 邀请 Bot 进入服务器，并授予发送消息、读取历史、被提及响应等权限
+5. 可选：配置 `discord_allowed_channels` 限制可回复频道
 
-1. 访问 [console.anthropic.com](https://console.anthropic.com/)
-2. 注册或登录
-3. 进入 **API Keys** 页面，创建新的 key
-4. 复制 key（以 `sk-ant-` 开头）
+### 2. 获取 LLM API Key
+
+选择一个 provider 并创建 API key：
+- Anthropic: [console.anthropic.com](https://console.anthropic.com/)
+- OpenAI: [platform.openai.com](https://platform.openai.com/)
+- 或任意 OpenAI 兼容 provider（OpenRouter、DeepSeek 等）
+- 对于 `openai-codex`，可使用 OAuth（`codex login`）或 API key（用于 OpenAI 兼容代理端点）
 
 ### 3. 配置（推荐：交互式问答）
 
@@ -375,9 +387,11 @@ microclaw gateway uninstall
 
 | 配置键 | 必需 | 默认值 | 描述 |
 |------|------|--------|------|
-| `telegram_bot_token` | 是 | -- | BotFather 的 Telegram bot token |
+| `telegram_bot_token` | 否* | -- | BotFather 的 Telegram bot token |
+| `discord_bot_token` | 否* | -- | Discord Bot token（来自 Discord Developer Portal） |
+| `discord_allowed_channels` | 否 | `[]` | Discord 允许响应的频道 ID 列表；为空表示不限制 |
 | `api_key` | 是* | -- | LLM API key（`ollama` 可留空；`openai-codex` 支持 OAuth 或 `api_key`） |
-| `bot_username` | 是 | -- | Bot 用户名（不带 @） |
+| `bot_username` | 否 | -- | Telegram Bot 用户名（不带 @，仅 Telegram 群聊 @ 提及时需要） |
 | `llm_provider` | 否 | `anthropic` | 提供方预设 ID（或自定义 ID）。`anthropic` 走原生 Anthropic API，其他走 OpenAI 兼容 API |
 | `model` | 否 | 随 provider 默认 | 模型名 |
 | `model_prices` | 否 | `[]` | 可选模型价格表（每百万 token 的美元单价），用于 `/usage` 成本估算 |
@@ -393,15 +407,20 @@ microclaw gateway uninstall
 | `max_session_messages` | 否 | `40` | 触发上下文压缩的消息数阈值 |
 | `compact_keep_recent` | 否 | `20` | 压缩时保留的最近消息数 |
 
+`*` 需要至少启用一个渠道：`telegram_bot_token`、`discord_bot_token`，或 `web_enabled: true`。
+
 ### 支持的 `llm_provider` 值
 
 `openai`、`openai-codex`、`openrouter`、`anthropic`、`ollama`、`google`、`alibaba`、`deepseek`、`moonshot`、`mistral`、`azure`、`bedrock`、`zhipu`、`minimax`、`cohere`、`tencent`、`xai`、`huggingface`、`together`、`custom`。
 
-## 群聊
+## 平台行为
 
-私聊中机器人回复每条消息。群聊中只在被 `@bot_username` 提及时回复。所有群消息仍会存储用于上下文。
+- Telegram 私聊：每条消息都会回复
+- Telegram 群聊：仅在被 `@bot_username` 提及时回复；但仍会存储所有消息用于上下文
+- Discord DM：每条消息都会回复
+- Discord 服务器频道：被 @ 提及时回复；可通过 `discord_allowed_channels` 限定频道
 
-**追赶行为：** 在群里被 @ 时，机器人会加载该群上次回复以来的所有消息（而不是仅最近 N 条），使群聊交互更具上下文。
+**追赶行为（Telegram 群）：** 被 @ 时，机器人会加载该群上次回复以来的所有消息（而不是仅最近 N 条），使群聊交互更具上下文。
 
 ## 多聊天权限模型
 
@@ -450,6 +469,18 @@ Bot: 端口 5433。
 你: 帮我把这个文档转成 PDF
 Bot: [激活 pdf 技能，按照专业指令完成转换]
 ```
+
+## 新增平台适配器（Adding a New Platform Adapter）
+
+MicroClaw 的核心智能体循环是渠道无关的。新增平台时，重点是实现适配器层：
+
+1. 将平台入站事件映射到统一输入（`chat_id`、sender、chat type、content blocks）。
+2. 复用共享的 `process_with_claude` 流程，不要新增平台专属 agent loop。
+3. 实现平台出站发送（文本与附件），并处理平台长度限制。
+4. 定义群组/频道场景下的触发规则（例如 @ 提及才回复）。
+5. 保持会话键稳定，确保会话恢复、上下文压缩、记忆机制可复用。
+6. 复用现有权限与安全边界（`control_chat_ids`、工具约束、path guard）。
+7. 按 `TEST.md` 的模式补平台集成测试（私聊/DM、群聊/频道提及、`/reset`、长度限制、失败场景）。
 
 ## 许可证
 

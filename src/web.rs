@@ -405,6 +405,9 @@ struct UpdateConfigRequest {
     discord_bot_token: Option<String>,
     discord_allowed_channels: Option<Vec<u64>>,
 
+    reflector_enabled: Option<bool>,
+    reflector_interval_mins: Option<u64>,
+
     show_thinking: Option<bool>,
     web_enabled: Option<bool>,
     web_host: Option<String>,
@@ -524,6 +527,13 @@ async fn api_update_config(
     }
     if let Some(v) = body.discord_allowed_channels {
         cfg.discord_allowed_channels = v;
+    }
+
+    if let Some(v) = body.reflector_enabled {
+        cfg.reflector_enabled = v;
+    }
+    if let Some(v) = body.reflector_interval_mins {
+        cfg.reflector_interval_mins = v;
     }
 
     if let Some(v) = body.show_thinking {
@@ -1462,6 +1472,8 @@ mod tests {
             web_run_history_limit: 512,
             web_session_idle_ttl_seconds: 300,
             model_prices: vec![],
+            reflector_enabled: true,
+            reflector_interval_mins: 15,
         };
         let dir = std::env::temp_dir().join(format!("microclaw_webtest_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

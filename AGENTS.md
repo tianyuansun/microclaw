@@ -2,13 +2,14 @@
 
 ## Project overview
 
-MicroClaw is a Rust Telegram bot that connects Claude AI to Telegram chats with agentic tool execution, web browsing, scheduled tasks, and persistent memory. Inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) (TypeScript/WhatsApp), incorporating some of its design ideas and using Telegram as the messaging platform.
+MicroClaw is a Rust multi-platform chat bot with a channel-agnostic core plus platform adapters. It currently supports Telegram, Discord, and Web chats, and can be extended to additional platforms. It provides agentic tool execution, web browsing, scheduled tasks, and persistent memory. Inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) (TypeScript/WhatsApp), incorporating some of its design ideas.
 
 ## Tech stack
 
 - **Language:** Rust (2021 edition)
 - **Async runtime:** Tokio
 - **Telegram:** teloxide 0.17
+- **Discord:** serenity 0.12
 - **AI:** Anthropic Messages API via reqwest (direct HTTP, no SDK)
 - **Database:** SQLite via rusqlite (bundled)
 - **Serialization:** serde + serde_json
@@ -22,10 +23,12 @@ src/
     main.rs          -- Entry point. Initializes config, DB, memory manager, starts bot.
     config.rs        -- Loads all settings from microclaw.config.yaml.
     error.rs         -- MicroClawError enum (thiserror). All error variants for the app.
-    telegram.rs      -- Telegram message handler. Contains the agentic tool-use loop
+    telegram.rs      -- Telegram message handler. Contains the shared agentic tool-use loop
                         (process_with_claude), session resume (load/save full message
                         state), context compaction (summarize old messages), continuous
                         typing indicator, group chat catch-up, and response splitting.
+    discord.rs       -- Discord message handler via serenity gateway. Reuses
+                        process_with_claude and shared tool/session/memory flow.
     claude.rs        -- Anthropic Messages API client. Request/response types, HTTP calls
                         with retry on 429.
     db.rs            -- SQLite database. Four tables: chats, messages, scheduled_tasks,
@@ -50,8 +53,9 @@ src/
         web_search.rs-- DuckDuckGo HTML search. GET html.duckduckgo.com/html/?q=...,
                         regex parse result__a (links) and result__snippet (descriptions).
         web_fetch.rs -- Fetch URL, strip HTML tags via regex, return plain text (max 20KB).
-        send_message.rs -- Send Telegram message mid-conversation. Holds Bot instance.
-                           Chat ID passed via tool input (system prompt tells Claude the ID).
+        send_message.rs -- Send message mid-conversation (Telegram/Discord). Holds
+                           platform clients as needed. Chat/channel identifiers are
+                           passed via tool input.
         schedule.rs  -- 5 scheduling tools: schedule_task, list_scheduled_tasks,
                         pause_scheduled_task, resume_scheduled_task, cancel_scheduled_task.
                         Each holds Arc<Database>.
@@ -59,6 +63,11 @@ src/
                         tools (9 tools: bash, file ops, glob, grep, web, read_memory).
                         No send_message, write_memory, schedule, or recursive sub_agent.
 ```
+
+Top-level web directories:
+
+- `web/` -- MicroClaw built-in Web service/Web UI code used by this repository at runtime.
+- `website/` -- Separate website repository checked out alongside this project, used for landing page and documentation site content (not the in-app Web service).
 
 ## Key patterns
 
@@ -152,13 +161,15 @@ Direct HTTP to `https://api.anthropic.com/v1/messages` with:
 - Exponential backoff retry on HTTP 429 (up to 3 attempts)
 - Content blocks use tagged enums: `Text`, `ToolUse`, `ToolResult`
 
-### Message handling (`telegram.rs`)
+### Message handling (platform-specific)
 
-- **Private chats:** always respond
-- **Groups:** only respond when `@bot_username` is mentioned
+- **Telegram private chats:** always respond
+- **Telegram groups:** only respond when `@bot_username` is mentioned
+- **Discord DMs:** always respond
+- **Discord server channels:** respond on mention (and optional channel whitelist)
 - All messages are stored regardless of whether the bot responds
 - Consecutive same-role messages are merged before sending to Claude
-- Responses over 4096 chars are split at newline boundaries
+- Responses are split at channel limits (Telegram 4096, Discord 2000)
 - Empty responses are not sent (agent may have used send_message tool)
 
 ## Build and run
@@ -170,7 +181,7 @@ cargo run -- start       # run (requires microclaw.config.yaml)
 cargo run -- help        # CLI help
 ```
 
-Requires a `microclaw.config.yaml` with `telegram_bot_token`, `api_key`, and `bot_username`.
+Requires a `microclaw.config.yaml` with at least one enabled channel (`telegram_bot_token` or `discord_bot_token`, or `web_enabled=true`) plus model credentials.
 
 ## Adding a new tool
 

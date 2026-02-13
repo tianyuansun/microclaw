@@ -252,6 +252,8 @@ mod tests {
             web_run_history_limit: 512,
             web_session_idle_ttl_seconds: 300,
             model_prices: vec![],
+            reflector_enabled: true,
+            reflector_interval_mins: 15,
         }
     }
 

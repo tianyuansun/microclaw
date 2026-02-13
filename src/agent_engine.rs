@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::info;
 
-use crate::db::{call_blocking, StoredMessage};
+use crate::db::{call_blocking, Database, StoredMessage};
 use crate::llm_types::{ContentBlock, ImageSource, Message, MessageContent, ResponseContentBlock};
 use crate::runtime::AppState;
 use crate::text::floor_char_boundary;
@@ -136,7 +136,9 @@ pub(crate) async fn process_with_agent_impl(
     let chat_id = context.chat_id;
 
     // Build system prompt
-    let memory_context = state.memory.build_memory_context(chat_id);
+    let file_memory = state.memory.build_memory_context(chat_id);
+    let db_memory = build_db_memory_context(&state.db, chat_id).await;
+    let memory_context = format!("{}{}", file_memory, db_memory);
     let skills_catalog = state.skills.build_skills_catalog();
     let system_prompt = build_system_prompt(
         &state.config.bot_username,
@@ -495,6 +497,33 @@ pub(crate) async fn load_messages_from_db(
         &history,
         &state.config.bot_username,
     ))
+}
+
+pub(crate) async fn build_db_memory_context(db: &std::sync::Arc<Database>, chat_id: i64) -> String {
+    let memories = match call_blocking(db.clone(), move |db| {
+        db.get_memories_for_context(chat_id, 30)
+    })
+    .await
+    {
+        Ok(m) => m,
+        Err(_) => return String::new(),
+    };
+
+    if memories.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("<structured_memories>\n");
+    for m in &memories {
+        let scope = if m.chat_id.is_none() {
+            "global"
+        } else {
+            "chat"
+        };
+        out.push_str(&format!("[{}] [{}] {}\n", m.category, scope, m.content));
+    }
+    out.push_str("</structured_memories>\n");
+    out
 }
 
 pub(crate) fn build_system_prompt(
