@@ -5,6 +5,7 @@ use tracing::info;
 use crate::db::{call_blocking, Database, StoredMessage};
 use crate::embedding::EmbeddingProvider;
 use crate::llm_types::{ContentBlock, ImageSource, Message, MessageContent, ResponseContentBlock};
+use crate::memory_quality;
 use crate::runtime::AppState;
 use crate::text::floor_char_boundary;
 use crate::tools::ToolAuthContext;
@@ -127,6 +128,91 @@ fn format_user_message(sender_name: &str, content: &str) -> String {
         sanitize_xml(content)
     )
 }
+
+fn jaccard_similarity_ratio(a: &str, b: &str) -> f64 {
+    use std::collections::HashSet;
+    let a_words: HashSet<&str> = a.split_whitespace().collect();
+    let b_words: HashSet<&str> = b.split_whitespace().collect();
+    let intersection = a_words.intersection(&b_words).count();
+    let union = a_words.len() + b_words.len() - intersection;
+    if union == 0 {
+        1.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
+async fn maybe_handle_explicit_memory_command(
+    state: &AppState,
+    chat_id: i64,
+    override_prompt: Option<&str>,
+    image_data: Option<(String, String)>,
+) -> anyhow::Result<Option<String>> {
+    if override_prompt.is_some() || image_data.is_some() {
+        return Ok(None);
+    }
+
+    let latest_user = call_blocking(state.db.clone(), move |db| db.get_recent_messages(chat_id, 10)).await?;
+    let Some(last_user_text) = latest_user
+        .into_iter()
+        .rev()
+        .find(|m| !m.is_from_bot)
+        .map(|m| m.content)
+    else {
+        return Ok(None);
+    };
+
+    let Some(explicit_content) = memory_quality::extract_explicit_memory_command(&last_user_text) else {
+        return Ok(None);
+    };
+    if !memory_quality::memory_quality_ok(&explicit_content) {
+        return Ok(Some(
+            "I skipped saving that memory because it looked too vague. Please send a specific fact.".to_string(),
+        ));
+    }
+
+    let existing = call_blocking(state.db.clone(), move |db| db.get_all_memories_for_chat(Some(chat_id))).await?;
+    if let Some(dup) = existing.iter().find(|m| {
+        !m.is_archived
+            && (m.content.eq_ignore_ascii_case(&explicit_content)
+                || jaccard_similarity_ratio(&m.content, &explicit_content) >= 0.55)
+    }) {
+        let memory_id = dup.id;
+        let content_for_update = explicit_content.clone();
+        let _ = call_blocking(state.db.clone(), move |db| {
+            db.update_memory_with_metadata(memory_id, &content_for_update, "KNOWLEDGE", 0.95, "explicit")
+                .map(|_| ())
+        })
+        .await;
+        return Ok(Some(format!("Noted. Updated memory #{memory_id}: {explicit_content}")));
+    }
+
+    let content_for_insert = explicit_content.clone();
+    let inserted_id = call_blocking(state.db.clone(), move |db| {
+        db.insert_memory_with_metadata(Some(chat_id), &content_for_insert, "KNOWLEDGE", "explicit", 0.95)
+    })
+    .await?;
+
+    #[cfg(feature = "sqlite-vec")]
+    {
+        if let Some(provider) = &state.embedding {
+            if let Ok(embedding) = provider.embed(&explicit_content).await {
+                let provider_model = provider.model().to_string();
+                let _ = call_blocking(state.db.clone(), move |db| {
+                    db.upsert_memory_vec(inserted_id, &embedding)?;
+                    db.update_memory_embedding_model(inserted_id, &provider_model)?;
+                    Ok(())
+                })
+                .await;
+            }
+        }
+    }
+
+    Ok(Some(format!(
+        "Noted. Saved memory #{inserted_id}: {explicit_content}"
+    )))
+}
+
 pub(crate) async fn process_with_agent_impl(
     state: &AppState,
     context: AgentRequestContext<'_>,
@@ -135,6 +221,12 @@ pub(crate) async fn process_with_agent_impl(
     event_tx: Option<&UnboundedSender<AgentEvent>>,
 ) -> anyhow::Result<String> {
     let chat_id = context.chat_id;
+
+    if let Some(reply) =
+        maybe_handle_explicit_memory_command(state, chat_id, override_prompt, image_data.clone()).await?
+    {
+        return Ok(reply);
+    }
 
     // Load messages first so we can use the latest user message as the relevance query
     let mut messages = if let Some((json, updated_at)) =
@@ -676,10 +768,25 @@ pub(crate) async fn build_db_memory_context(
         out.push_str(&format!("(+{omitted} memories omitted)\n"));
     }
     out.push_str("</structured_memories>\n");
+    let candidate_count = ordered.len();
+    let selected_count = candidate_count.saturating_sub(omitted);
+    let retrieval_method_owned = retrieval_method.to_string();
+    let _ = call_blocking(db.clone(), move |d| {
+        d.log_memory_injection(
+            chat_id,
+            &retrieval_method_owned,
+            candidate_count,
+            selected_count,
+            omitted,
+            used_tokens,
+        )
+        .map(|_| ())
+    })
+    .await;
     info!(
         "Memory injection: chat {} -> {} memories, method={}, tokens_est={}, omitted={}",
         chat_id,
-        ordered.len().saturating_sub(omitted),
+        selected_count,
         retrieval_method,
         used_tokens,
         omitted

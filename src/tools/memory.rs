@@ -6,6 +6,7 @@ use tracing::info;
 
 use crate::db::{call_blocking, Database};
 use crate::llm_types::ToolDefinition;
+use crate::memory_quality;
 
 use super::{auth_context_from_input, authorize_chat_access, schema_object, Tool, ToolResult};
 
@@ -177,23 +178,24 @@ impl Tool for WriteMemoryTool {
 
         match std::fs::write(&path, content) {
             Ok(()) => {
-                let mut memory_content = content.trim().to_string();
+                let memory_content = content.trim().to_string();
                 if !memory_content.is_empty() {
-                    if memory_content.len() > 300 {
-                        let cutoff = memory_content
-                            .char_indices()
-                            .map(|(i, _)| i)
-                            .take_while(|&i| i <= 300)
-                            .last()
-                            .unwrap_or(300);
-                        memory_content.truncate(cutoff);
+                    if let Some(normalized) = memory_quality::normalize_memory_content(&memory_content, 180) {
+                        if memory_quality::memory_quality_ok(&normalized) {
+                            let chat_id = memory_chat_id;
+                            let _ = call_blocking(self.db.clone(), move |db| {
+                                db.insert_memory_with_metadata(
+                                    chat_id,
+                                    &normalized,
+                                    "KNOWLEDGE",
+                                    "write_memory_tool",
+                                    0.85,
+                                )
+                                .map(|_| ())
+                            })
+                            .await;
+                        }
                     }
-                    let chat_id = memory_chat_id;
-                    let _ = call_blocking(self.db.clone(), move |db| {
-                        db.insert_memory(chat_id, &memory_content, "KNOWLEDGE")
-                            .map(|_| ())
-                    })
-                    .await;
                 }
 
                 ToolResult::success(format!("Memory saved to {} scope.", scope))

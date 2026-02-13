@@ -13,6 +13,7 @@ use crate::db::call_blocking;
 use crate::llm_types::{Message, MessageContent, ResponseContentBlock};
 use crate::runtime::AppState;
 use crate::text::floor_char_boundary;
+use crate::{db::Memory, memory_quality};
 
 pub fn spawn_scheduler(state: Arc<AppState>) {
     tokio::spawn(async move {
@@ -155,7 +156,7 @@ const REFLECTOR_SYSTEM_PROMPT: &str = r#"You are a memory extraction specialist.
 Rules:
 - Extract ONLY concrete facts, preferences, expertise, or notable events
 - IGNORE: greetings, small talk, unanswered questions, transient requests
-- Each memory < 150 characters, specific and concrete
+- Each memory < 100 characters, specific and concrete
 - Category must be exactly one of: PROFILE (user attributes/preferences), KNOWLEDGE (facts/expertise), EVENT (significant things that happened)
 - If a new memory updates or supersedes an existing one, add "supersedes_id": <id> to replace it
 - Output ONLY valid JSON array: [{"content":"...","category":"PROFILE","supersedes_id":null}]
@@ -171,6 +172,19 @@ fn jaccard_similar(a: &str, b: &str, threshold: f64) -> bool {
         return true;
     }
     intersection as f64 / union as f64 >= threshold
+}
+
+fn should_merge_duplicate(existing: &Memory, incoming_content: &str, incoming_category: &str) -> bool {
+    if existing.is_archived {
+        return true;
+    }
+    if existing.content.eq_ignore_ascii_case(incoming_content) {
+        return false;
+    }
+    if incoming_category == "PROFILE" && existing.category != "PROFILE" {
+        return true;
+    }
+    incoming_content.len() > existing.content.len() + 8
 }
 
 #[cfg(feature = "sqlite-vec")]
@@ -234,6 +248,8 @@ async fn run_reflector(state: &Arc<AppState>) {
     #[cfg(feature = "sqlite-vec")]
     backfill_embeddings(state).await;
 
+    let _ = call_blocking(state.db.clone(), move |db| db.archive_stale_memories(30)).await;
+
     let lookback_secs = (state.config.reflector_interval_mins * 2 * 60) as i64;
     let since = (Utc::now() - chrono::Duration::seconds(lookback_secs)).to_rfc3339();
 
@@ -255,6 +271,7 @@ async fn run_reflector(state: &Arc<AppState>) {
 }
 
 async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
+    let started_at = Utc::now().to_rfc3339();
     // 1. Get message cursor for incremental reflection
     let cursor =
         match call_blocking(state.db.clone(), move |db| db.get_reflector_cursor(chat_id)).await {
@@ -331,6 +348,24 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
         Ok(r) => r,
         Err(e) => {
             error!("Reflector: LLM call failed for chat {chat_id}: {e}");
+            let finished_at = Utc::now().to_rfc3339();
+            let error_msg = e.to_string();
+            let _ = call_blocking(state.db.clone(), move |db| {
+                db.log_reflector_run(
+                    chat_id,
+                    &started_at,
+                    &finished_at,
+                    0,
+                    0,
+                    0,
+                    0,
+                    "none",
+                    false,
+                    Some(&error_msg),
+                )
+                .map(|_| ())
+            })
+            .await;
             return;
         }
     };
@@ -357,12 +392,47 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
             let end = text.rfind(']').map(|i| i + 1).unwrap_or(text.len());
             if start >= end {
                 error!("Reflector: parse failed for chat {chat_id}: no JSON array found");
+                let finished_at = Utc::now().to_rfc3339();
+                let _ = call_blocking(state.db.clone(), move |db| {
+                    db.log_reflector_run(
+                        chat_id,
+                        &started_at,
+                        &finished_at,
+                        0,
+                        0,
+                        0,
+                        0,
+                        "none",
+                        false,
+                        Some("no JSON array found"),
+                    )
+                    .map(|_| ())
+                })
+                .await;
                 return;
             }
             match serde_json::from_str(&text[start..end]) {
                 Ok(v) => v,
                 Err(e) => {
                     error!("Reflector: parse failed for chat {chat_id}: {e}");
+                    let finished_at = Utc::now().to_rfc3339();
+                    let error_msg = e.to_string();
+                    let _ = call_blocking(state.db.clone(), move |db| {
+                        db.log_reflector_run(
+                            chat_id,
+                            &started_at,
+                            &finished_at,
+                            0,
+                            0,
+                            0,
+                            0,
+                            "none",
+                            false,
+                            Some(&error_msg),
+                        )
+                        .map(|_| ())
+                    })
+                    .await;
                     return;
                 }
             }
@@ -391,7 +461,10 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
     };
     #[cfg(not(feature = "sqlite-vec"))]
     let dedup_method = "jaccard";
-    let mut seen_contents: Vec<String> = existing.iter().map(|m| m.content.clone()).collect();
+    let mut seen_contents: Vec<(i64, String)> =
+        existing.iter().map(|m| (m.id, m.content.clone())).collect();
+    let existing_by_id: std::collections::HashMap<i64, &Memory> =
+        existing.iter().map(|m| (m.id, m)).collect();
     for item in &extracted {
         let content = match item.get("content").and_then(|v| v.as_str()) {
             Some(s) => s,
@@ -405,8 +478,11 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
         if !matches!(category.as_str(), "PROFILE" | "KNOWLEDGE" | "EVENT") {
             continue;
         }
-        let content = content.trim();
-        if content.is_empty() || content.len() > 300 {
+        let content = match memory_quality::normalize_memory_content(content, 180) {
+            Some(c) => c,
+            None => continue,
+        };
+        if !memory_quality::memory_quality_ok(&content) {
             continue;
         }
 
@@ -418,7 +494,7 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
                 let category = category.to_string();
                 let db_content = content.clone();
                 if call_blocking(state.db.clone(), move |db| {
-                    db.update_memory_content(sid, &db_content, &category)
+                    db.update_memory_with_metadata(sid, &db_content, &category, 0.78, "reflector")
                 })
                 .await
                 .is_ok()
@@ -428,14 +504,14 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
                     {
                         let _ = upsert_memory_embedding(state, sid, &content).await;
                     }
-                    seen_contents.push(content);
+                    seen_contents.push((sid, content));
                 }
                 continue;
             }
         }
 
         // Dedup: semantic KNN when available, otherwise lexical Jaccard.
-        let is_dup = {
+        let duplicate_id = {
             #[cfg(feature = "sqlite-vec")]
             {
                 if let Some(provider) = &state.embedding {
@@ -446,27 +522,60 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
                         .await
                         .ok()
                         .and_then(|rows| rows.first().copied());
-                        nearest.map(|(_, dist)| dist < 0.15).unwrap_or(false)
+                        nearest
+                            .and_then(|(id, dist)| if dist < 0.15 { Some(id) } else { None })
                     } else {
                         seen_contents
                             .iter()
-                            .any(|existing| jaccard_similar(existing, content, 0.5))
+                            .find(|(_, existing)| jaccard_similar(existing, &content, 0.5))
+                            .map(|(id, _)| *id)
                     }
                 } else {
                     seen_contents
                         .iter()
-                        .any(|existing| jaccard_similar(existing, content, 0.5))
+                        .find(|(_, existing)| jaccard_similar(existing, &content, 0.5))
+                        .map(|(id, _)| *id)
                 }
             }
             #[cfg(not(feature = "sqlite-vec"))]
             {
                 seen_contents
                     .iter()
-                    .any(|existing| jaccard_similar(existing, content, 0.5))
+                    .find(|(_, existing)| jaccard_similar(existing, &content, 0.5))
+                    .map(|(id, _)| *id)
             }
         };
-        if is_dup {
-            skipped += 1;
+        if let Some(dup_id) = duplicate_id {
+            if let Some(existing_mem) = existing_by_id.get(&dup_id) {
+                if should_merge_duplicate(existing_mem, &content, &category) {
+                    let update_content = content.to_string();
+                    let update_category = category.to_string();
+                    if call_blocking(state.db.clone(), move |db| {
+                        db.update_memory_with_metadata(
+                            dup_id,
+                            &update_content,
+                            &update_category,
+                            0.70,
+                            "reflector",
+                        )
+                    })
+                    .await
+                    .is_ok()
+                    {
+                        updated += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                } else {
+                    let _ = call_blocking(state.db.clone(), move |db| {
+                        db.touch_memory_last_seen(dup_id, Some(0.55)).map(|_| ())
+                    })
+                    .await;
+                    skipped += 1;
+                }
+            } else {
+                skipped += 1;
+            }
             continue;
         }
 
@@ -474,7 +583,7 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
         let db_content = content.clone();
         let category = category.to_string();
         let inserted_id = call_blocking(state.db.clone(), move |db| {
-            db.insert_memory(Some(chat_id), &db_content, &category)
+            db.insert_memory_with_metadata(Some(chat_id), &db_content, &category, "reflector", 0.68)
         })
         .await
         .ok();
@@ -486,7 +595,7 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
             }
             #[cfg(not(feature = "sqlite-vec"))]
             let _ = memory_id;
-            seen_contents.push(content);
+            seen_contents.push((memory_id, content));
         }
     }
 
@@ -502,6 +611,24 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
             "Reflector: chat {chat_id} -> {inserted} new ({dedup_method} dedup), {updated} updated, {skipped} skipped"
         );
     }
+
+    let finished_at = Utc::now().to_rfc3339();
+    let _ = call_blocking(state.db.clone(), move |db| {
+        db.log_reflector_run(
+            chat_id,
+            &started_at,
+            &finished_at,
+            extracted.len(),
+            inserted,
+            updated,
+            skipped,
+            dedup_method,
+            true,
+            None,
+        )
+        .map(|_| ())
+    })
+    .await;
 }
 
 #[cfg(test)]

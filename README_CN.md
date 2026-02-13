@@ -106,8 +106,16 @@ microclaw.data/runtime/groups/
 另外，MicroClaw 也会把结构化记忆写入 SQLite（`memories` 表）：
 - `write_memory` 会同时写入文件记忆与结构化记忆
 - 后台 Reflector 会增量提取长期事实并去重
+- 对“记住……”类显式指令走确定性快速路径（直接结构化 upsert）
+- 写入前有质量闸门，过滤低信息量/不确定表达
+- 结构化记忆具备置信度与软归档生命周期（不再只依赖硬删除）
 
 当使用 `--features sqlite-vec` 构建且配置了 embedding 参数时，结构化记忆的检索和去重会使用语义 KNN；否则自动回退为关键词排序 + Jaccard 去重。
+
+`/usage` 现在包含 **Memory Observability**（Web UI 也有可视化面板），可查看：
+- 记忆池健康度（active/archived/low-confidence）
+- Reflector 24h 吞吐（insert/update/skip）
+- 注入覆盖率（selected/candidates）
 
 ### 聊天身份映射（channel + chat id）
 

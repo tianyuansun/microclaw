@@ -107,8 +107,16 @@ Memory is loaded into the system prompt on every request. The model can read and
 MicroClaw also keeps structured memory rows in SQLite (`memories` table):
 - `write_memory` persists to file memory and structured memory
 - Background reflector extracts durable facts incrementally and deduplicates
+- Explicit "remember ..." commands use a deterministic fast path (direct structured-memory upsert)
+- Low-quality/noisy memories are filtered by quality gates before insertion
+- Memory lifecycle is managed with confidence + soft-archive fields (instead of hard delete)
 
 When built with `--features sqlite-vec` and embedding config is set, structured-memory retrieval and dedup use semantic KNN. Otherwise, it falls back to keyword relevance + Jaccard dedup.
+
+`/usage` now includes a **Memory Observability** section (and Web UI panel) showing:
+- memory pool health (active/archived/low-confidence)
+- reflector throughput (insert/update/skip in 24h)
+- injection coverage (selected vs candidate memories in 24h)
 
 ### Chat Identity Mapping
 

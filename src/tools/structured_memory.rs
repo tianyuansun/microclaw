@@ -39,6 +39,10 @@ impl Tool for StructuredMemorySearchTool {
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of results to return (default 10, max 50)"
+                    },
+                    "include_archived": {
+                        "type": "boolean",
+                        "description": "Whether to include archived memories in results (default false)"
                     }
                 }),
                 &["query"],
@@ -56,15 +60,21 @@ impl Tool for StructuredMemorySearchTool {
             .and_then(|v| v.as_u64())
             .map(|n| n.min(50) as usize)
             .unwrap_or(10);
+        let include_archived = input
+            .get("include_archived")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let chat_id = auth_context_from_input(&input)
             .map(|a| a.caller_chat_id)
             .unwrap_or(0);
 
-        info!("structured_memory_search: query={query:?} chat_id={chat_id} limit={limit}");
+        info!(
+            "structured_memory_search: query={query:?} chat_id={chat_id} limit={limit} include_archived={include_archived}"
+        );
 
         match call_blocking(self.db.clone(), move |db| {
-            db.search_memories(chat_id, &query, limit)
+            db.search_memories_with_options(chat_id, &query, limit, include_archived, true)
         })
         .await
         {
@@ -111,7 +121,7 @@ impl Tool for StructuredMemoryDeleteTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "structured_memory_delete".into(),
-            description: "Delete a structured memory by its id. Use structured_memory_search first to find the id. You can only delete memories that belong to the current chat or global memories if you are a control chat.".into(),
+            description: "Archive a structured memory by its id (soft delete). Use structured_memory_search first to find the id. You can only archive memories that belong to the current chat or global memories if you are a control chat.".into(),
             input_schema: schema_object(
                 json!({
                     "id": {
@@ -159,8 +169,8 @@ impl Tool for StructuredMemoryDeleteTool {
 
         info!("structured_memory_delete: id={id}");
 
-        match call_blocking(self.db.clone(), move |db| db.delete_memory(id)).await {
-            Ok(true) => ToolResult::success(format!("Memory id={id} deleted.")),
+        match call_blocking(self.db.clone(), move |db| db.archive_memory(id)).await {
+            Ok(true) => ToolResult::success(format!("Memory id={id} archived.")),
             Ok(false) => ToolResult::error(format!("Memory id={id} not found")),
             Err(e) => ToolResult::error(format!("Delete failed: {e}")),
         }
@@ -326,7 +336,8 @@ mod tests {
             }))
             .await;
         assert!(!result.is_error, "{}", result.content);
-        assert!(db.get_memory_by_id(id).unwrap().is_none());
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert!(mem.is_archived);
     }
 
     #[tokio::test]

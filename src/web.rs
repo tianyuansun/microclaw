@@ -739,12 +739,31 @@ async fn api_usage(
     let report = build_usage_report(state.app_state.db.clone(), &state.app_state.config, chat_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let memory_observability = call_blocking(state.app_state.db.clone(), move |db| {
+        db.get_memory_observability_summary(Some(chat_id))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(json!({
         "ok": true,
         "session_key": session_key,
         "chat_id": chat_id,
         "report": report,
+        "memory_observability": {
+            "total": memory_observability.total,
+            "active": memory_observability.active,
+            "archived": memory_observability.archived,
+            "low_confidence": memory_observability.low_confidence,
+            "avg_confidence": memory_observability.avg_confidence,
+            "reflector_runs_24h": memory_observability.reflector_runs_24h,
+            "reflector_inserted_24h": memory_observability.reflector_inserted_24h,
+            "reflector_updated_24h": memory_observability.reflector_updated_24h,
+            "reflector_skipped_24h": memory_observability.reflector_skipped_24h,
+            "injection_events_24h": memory_observability.injection_events_24h,
+            "injection_selected_24h": memory_observability.injection_selected_24h,
+            "injection_candidates_24h": memory_observability.injection_candidates_24h,
+        },
     })))
 }
 
@@ -1846,9 +1865,13 @@ mod tests {
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(true));
         let report = v.get("report").and_then(|x| x.as_str()).unwrap_or_default();
         assert!(report.contains("Token Usage"));
         assert!(report.contains("This chat"));
+        let mem = v.get("memory_observability").and_then(|x| x.as_object());
+        assert!(mem.is_some());
+        assert!(mem.unwrap().contains_key("total"));
     }
 
     #[tokio::test]

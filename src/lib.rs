@@ -14,6 +14,7 @@ pub mod llm_types;
 pub mod logging;
 pub mod mcp;
 pub mod memory;
+pub mod memory_quality;
 pub mod runtime;
 pub mod scheduler;
 pub mod setup;

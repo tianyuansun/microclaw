@@ -3,7 +3,9 @@ use std::sync::Arc;
 use chrono::SecondsFormat;
 
 use crate::config::Config;
-use crate::db::{call_blocking, Database, LlmModelUsageSummary, LlmUsageSummary};
+use crate::db::{
+    call_blocking, Database, LlmModelUsageSummary, LlmUsageSummary, MemoryObservabilitySummary,
+};
 
 fn fmt_int(v: i64) -> String {
     let neg = v < 0;
@@ -106,6 +108,15 @@ async fn query_by_model(
     .map_err(|e| e.to_string())
 }
 
+async fn query_memory_summary(
+    db: Arc<Database>,
+    chat_id: Option<i64>,
+) -> Result<MemoryObservabilitySummary, String> {
+    call_blocking(db, move |d| d.get_memory_observability_summary(chat_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 pub async fn build_usage_report(
     db: Arc<Database>,
     _config: &Config,
@@ -141,11 +152,13 @@ pub async fn build_usage_report(
     )
     .await?;
     let global_models_7d = query_by_model(
-        db,
+        db.clone(),
         None,
         Some((now - chrono::Duration::days(7)).to_rfc3339()),
     )
     .await?;
+    let chat_mem = query_memory_summary(db.clone(), Some(chat_id)).await?;
+    let global_mem = query_memory_summary(db.clone(), None).await?;
 
     let mut lines = vec![
         "📊 Token Usage".to_string(),
@@ -174,6 +187,53 @@ pub async fn build_usage_report(
         &global_7d,
         &global_models_24h,
         &global_models_7d,
+    ));
+
+    lines.push("".to_string());
+    lines.push("🧠 Memory Observability".to_string());
+    lines.push("".to_string());
+    lines.push(format!(
+        "  This chat: total={} active={} archived={} avg_conf={:.2} low_conf={}",
+        fmt_int(chat_mem.total),
+        fmt_int(chat_mem.active),
+        fmt_int(chat_mem.archived),
+        chat_mem.avg_confidence,
+        fmt_int(chat_mem.low_confidence)
+    ));
+    lines.push(format!(
+        "  Reflector 24h: runs={} +{} ~{} -{}",
+        fmt_int(chat_mem.reflector_runs_24h),
+        fmt_int(chat_mem.reflector_inserted_24h),
+        fmt_int(chat_mem.reflector_updated_24h),
+        fmt_int(chat_mem.reflector_skipped_24h)
+    ));
+    lines.push(format!(
+        "  Injection 24h: events={} selected/candidates={}/{}",
+        fmt_int(chat_mem.injection_events_24h),
+        fmt_int(chat_mem.injection_selected_24h),
+        fmt_int(chat_mem.injection_candidates_24h)
+    ));
+    lines.push("".to_string());
+    lines.push(format!(
+        "  Global: total={} active={} archived={} avg_conf={:.2} low_conf={}",
+        fmt_int(global_mem.total),
+        fmt_int(global_mem.active),
+        fmt_int(global_mem.archived),
+        global_mem.avg_confidence,
+        fmt_int(global_mem.low_confidence)
+    ));
+    lines.push(format!(
+        "  Global reflector 24h: runs={} +{} ~{} -{}",
+        fmt_int(global_mem.reflector_runs_24h),
+        fmt_int(global_mem.reflector_inserted_24h),
+        fmt_int(global_mem.reflector_updated_24h),
+        fmt_int(global_mem.reflector_skipped_24h)
+    ));
+    lines.push(format!(
+        "  Global injection 24h: events={} selected/candidates={}/{}",
+        fmt_int(global_mem.injection_events_24h),
+        fmt_int(global_mem.injection_selected_24h),
+        fmt_int(global_mem.injection_candidates_24h)
     ));
 
     Ok(lines.join("\n"))

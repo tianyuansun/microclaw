@@ -73,6 +73,21 @@ type ToolResultPayload = {
   error_type?: string
 }
 
+type MemoryObservability = {
+  total: number
+  active: number
+  archived: number
+  low_confidence: number
+  avg_confidence: number
+  reflector_runs_24h: number
+  reflector_inserted_24h: number
+  reflector_updated_24h: number
+  reflector_skipped_24h: number
+  injection_events_24h: number
+  injection_selected_24h: number
+  injection_candidates_24h: number
+}
+
 type Appearance = 'dark' | 'light'
 type UiTheme =
   | 'green'
@@ -189,6 +204,16 @@ function readUiTheme(): UiTheme {
 
 function saveUiTheme(value: UiTheme): void {
   localStorage.setItem('microclaw_ui_theme', value)
+}
+
+function fmtInt(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return Math.trunc(value).toLocaleString('en-US')
+}
+
+function fmtPct(num: number, den: number): string {
+  if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return '0%'
+  return `${((num / den) * 100).toFixed(1)}%`
 }
 
 function writeSessionToUrl(sessionKey: string): void {
@@ -613,6 +638,7 @@ function App() {
   const [usageOpen, setUsageOpen] = useState<boolean>(false)
   const [usageLoading, setUsageLoading] = useState<boolean>(false)
   const [usageReport, setUsageReport] = useState<string>('')
+  const [usageMemory, setUsageMemory] = useState<MemoryObservability | null>(null)
   const [usageError, setUsageError] = useState<string>('')
   const [usageSession, setUsageSession] = useState<string>('')
 
@@ -969,11 +995,13 @@ function App() {
     setUsageLoading(true)
     setUsageError('')
     setUsageReport('')
+    setUsageMemory(null)
     setUsageSession(targetSession)
     try {
       const query = new URLSearchParams({ session_key: targetSession })
-      const data = await api<{ report?: string }>(`/api/usage?${query.toString()}`)
+      const data = await api<{ report?: string; memory_observability?: MemoryObservability }>(`/api/usage?${query.toString()}`)
       setUsageReport(String(data.report || '').trim())
+      setUsageMemory(data.memory_observability ?? null)
       setUsageOpen(true)
     } catch (e) {
       setUsageError(e instanceof Error ? e.message : String(e))
@@ -1657,7 +1685,60 @@ function App() {
                   <Callout.Text>{usageError}</Callout.Text>
                 </Callout.Root>
               ) : (
-                <pre className="whitespace-pre-wrap break-words text-[13px] leading-6">{usageReport || '(no usage data)'}</pre>
+                <div className="space-y-4">
+                  {usageMemory ? (
+                    <div className="space-y-3">
+                      <Flex justify="between" align="center">
+                        <Text size="2" weight="bold">Memory Observability</Text>
+                        <Text size="1" color="gray">24h operational view</Text>
+                      </Flex>
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <Card className="p-3">
+                          <Text size="1" color="gray">Memory Pool</Text>
+                          <Text size="4" weight="bold">{fmtInt(usageMemory.total)}</Text>
+                          <Text size="1" color="gray">
+                            active {fmtInt(usageMemory.active)} / archived {fmtInt(usageMemory.archived)}
+                          </Text>
+                        </Card>
+                        <Card className="p-3">
+                          <Text size="1" color="gray">Avg Confidence</Text>
+                          <Text size="4" weight="bold">{(usageMemory.avg_confidence * 100).toFixed(1)}%</Text>
+                          <Text size="1" color="gray">
+                            low confidence: {fmtInt(usageMemory.low_confidence)}
+                          </Text>
+                        </Card>
+                        <Card className="p-3">
+                          <Text size="1" color="gray">Reflector 24h</Text>
+                          <Text size="4" weight="bold">{fmtInt(usageMemory.reflector_runs_24h)}</Text>
+                          <Text size="1" color="gray">
+                            +{fmtInt(usageMemory.reflector_inserted_24h)} / ~{fmtInt(usageMemory.reflector_updated_24h)} / -{fmtInt(usageMemory.reflector_skipped_24h)}
+                          </Text>
+                        </Card>
+                        <Card className="p-3">
+                          <Text size="1" color="gray">Injection Coverage 24h</Text>
+                          <Text size="4" weight="bold">
+                            {fmtPct(usageMemory.injection_selected_24h, usageMemory.injection_candidates_24h)}
+                          </Text>
+                          <Text size="1" color="gray">
+                            {fmtInt(usageMemory.injection_selected_24h)} selected / {fmtInt(usageMemory.injection_candidates_24h)} candidates
+                          </Text>
+                        </Card>
+                      </div>
+                      <Card className="p-3">
+                        <Text size="1" color="gray">Signal Summary</Text>
+                        <Text size="2" className="mt-1 block">
+                          Injection events (24h): <strong>{fmtInt(usageMemory.injection_events_24h)}</strong>; reflector throughput:
+                          {' '}<strong>{fmtInt(usageMemory.reflector_inserted_24h + usageMemory.reflector_updated_24h)}</strong> accepted vs{' '}
+                          <strong>{fmtInt(usageMemory.reflector_skipped_24h)}</strong> skipped.
+                        </Text>
+                      </Card>
+                    </div>
+                  ) : null}
+                  <Card className="p-3">
+                    <Text size="2" weight="bold">Token Usage Report</Text>
+                    <pre className="mt-2 whitespace-pre-wrap break-words text-[13px] leading-6">{usageReport || '(no usage data)'}</pre>
+                  </Card>
+                </div>
               )}
             </Card>
           </Dialog.Content>
