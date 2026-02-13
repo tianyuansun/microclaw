@@ -145,7 +145,7 @@ pub fn create_provider(config: &Config) -> Option<Arc<dyn EmbeddingProvider>> {
     #[cfg(not(feature = "sqlite-vec"))]
     {
         let _ = config;
-        return None;
+        None
     }
 
     #[cfg(feature = "sqlite-vec")]

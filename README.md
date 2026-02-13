@@ -110,6 +110,29 @@ MicroClaw also keeps structured memory rows in SQLite (`memories` table):
 
 When built with `--features sqlite-vec` and embedding config is set, structured-memory retrieval and dedup use semantic KNN. Otherwise, it falls back to keyword relevance + Jaccard dedup.
 
+### Chat Identity Mapping
+
+MicroClaw now stores a channel-scoped identity for chats:
+
+- `internal chat_id`: SQLite primary key used by sessions/messages/tasks
+- `channel + external_chat_id`: source chat identity from Telegram/Discord/Web
+
+This avoids collisions when different channels can have the same numeric id. Legacy rows are migrated automatically on startup.
+
+Useful SQL for debugging:
+
+```sql
+SELECT chat_id, channel, external_chat_id, chat_type, chat_title
+FROM chats
+ORDER BY last_message_time DESC
+LIMIT 50;
+
+SELECT id, chat_id, chat_channel, external_chat_id, category, content, embedding_model
+FROM memories
+ORDER BY id DESC
+LIMIT 50;
+```
+
 ## Skills
 
 MicroClaw supports the [Anthropic Agent Skills](https://github.com/anthropics/skills) standard. Skills are modular packages that give the bot specialized capabilities for specific tasks.

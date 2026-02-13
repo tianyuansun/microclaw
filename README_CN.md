@@ -109,6 +109,29 @@ microclaw.data/runtime/groups/
 
 当使用 `--features sqlite-vec` 构建且配置了 embedding 参数时，结构化记忆的检索和去重会使用语义 KNN；否则自动回退为关键词排序 + Jaccard 去重。
 
+### 聊天身份映射（channel + chat id）
+
+MicroClaw 现在会保存“按渠道隔离”的聊天身份：
+
+- `internal chat_id`：SQLite 内部主键（用于 sessions/messages/tasks）
+- `channel + external_chat_id`：来自 Telegram/Discord/Web 的源聊天身份
+
+这样可避免不同渠道使用相同数字 id 时发生冲突。历史数据会在启动时自动迁移补齐。
+
+排查时建议用以下 SQL：
+
+```sql
+SELECT chat_id, channel, external_chat_id, chat_type, chat_title
+FROM chats
+ORDER BY last_message_time DESC
+LIMIT 50;
+
+SELECT id, chat_id, chat_channel, external_chat_id, category, content, embedding_model
+FROM memories
+ORDER BY id DESC
+LIMIT 50;
+```
+
 ## 技能系统
 
 MicroClaw 支持 [Anthropic Agent Skills](https://github.com/anthropics/skills) 标准。技能是为特定任务提供专业能力的模块化包。

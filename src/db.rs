@@ -14,6 +14,13 @@ pub struct Database {
 #[cfg(feature = "sqlite-vec")]
 static SQLITE_VEC_AUTOEXT_INIT: Once = Once::new();
 
+#[cfg(feature = "sqlite-vec")]
+type SqliteAutoExtensionFn = unsafe extern "C" fn(
+    *mut rusqlite::ffi::sqlite3,
+    *mut *mut i8,
+    *const rusqlite::ffi::sqlite3_api_routines,
+) -> i32;
+
 pub async fn call_blocking<T, F>(db: std::sync::Arc<Database>, f: F) -> Result<T, MicroClawError>
 where
     T: Send + 'static,
@@ -206,9 +213,9 @@ impl Database {
 
         #[cfg(feature = "sqlite-vec")]
         SQLITE_VEC_AUTOEXT_INIT.call_once(|| unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
+            let init_fn_ptr = sqlite_vec::sqlite3_vec_init as *const ();
+            let init_fn: SqliteAutoExtensionFn = std::mem::transmute(init_fn_ptr);
+            rusqlite::ffi::sqlite3_auto_extension(Some(init_fn));
         });
 
         let conn = Connection::open(db_path)?;
@@ -2174,6 +2181,94 @@ mod tests {
             db.get_chat_external_id(discord).unwrap().as_deref(),
             Some("12345")
         );
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_migration_backfills_chat_identity_columns() {
+        let dir = std::env::temp_dir().join(format!(
+            "microclaw_migration_chat_identity_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("microclaw.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chats (
+                chat_id INTEGER PRIMARY KEY,
+                chat_title TEXT,
+                chat_type TEXT NOT NULL DEFAULT 'private',
+                last_message_time TEXT NOT NULL
+            );
+            INSERT INTO chats(chat_id, chat_title, chat_type, last_message_time)
+            VALUES (100, 'legacy tg', 'telegram_private', '2026-01-01T00:00:00Z');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = Database::new(dir.to_str().unwrap()).unwrap();
+        let conn = db.lock_conn();
+        let (channel, external): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT channel, external_chat_id FROM chats WHERE chat_id = 100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(channel.as_deref(), Some("telegram"));
+        assert_eq!(external.as_deref(), Some("100"));
+        drop(conn);
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_migration_backfills_memory_identity_columns() {
+        let dir = std::env::temp_dir().join(format!(
+            "microclaw_migration_memory_identity_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("microclaw.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chats (
+                chat_id INTEGER PRIMARY KEY,
+                chat_title TEXT,
+                chat_type TEXT NOT NULL DEFAULT 'private',
+                last_message_time TEXT NOT NULL
+            );
+            INSERT INTO chats(chat_id, chat_title, chat_type, last_message_time)
+            VALUES (200, 'legacy discord', 'discord', '2026-01-01T00:00:00Z');
+
+            CREATE TABLE memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                embedding_model TEXT
+            );
+            INSERT INTO memories(chat_id, content, category, created_at, updated_at, embedding_model)
+            VALUES (200, 'legacy memory', 'KNOWLEDGE', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = Database::new(dir.to_str().unwrap()).unwrap();
+        let conn = db.lock_conn();
+        let (chat_channel, external): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT chat_channel, external_chat_id FROM memories WHERE chat_id = 200",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(chat_channel.as_deref(), Some("discord"));
+        assert_eq!(external.as_deref(), Some("200"));
+        drop(conn);
 
         cleanup(&dir);
     }

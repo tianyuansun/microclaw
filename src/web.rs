@@ -1861,4 +1861,35 @@ mod tests {
             .len();
         assert_eq!(message_count, 0);
     }
+
+    #[tokio::test]
+    async fn test_web_session_key_resolves_to_channel_scoped_chat_id() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let app = build_router(web_state.clone());
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"scoped-main","sender_name":"u","message":"hello"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let db = web_state.app_state.db.clone();
+        let chat_id = call_blocking(db.clone(), move |d| {
+            d.resolve_or_create_chat_id("web", "scoped-main", Some("scoped-main"), "web")
+        })
+        .await
+        .unwrap();
+        let external = call_blocking(db.clone(), move |d| d.get_chat_external_id(chat_id))
+            .await
+            .unwrap();
+        let routing = get_chat_routing(db, chat_id).await.unwrap();
+
+        assert_eq!(routing.map(|r| r.channel), Some(ChatChannel::Web));
+        assert_eq!(external.as_deref(), Some("scoped-main"));
+    }
 }
