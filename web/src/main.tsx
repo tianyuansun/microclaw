@@ -1478,7 +1478,15 @@ function App() {
                               placeholder={currentProvider === 'openai-codex' ? '(ignored for openai-codex)' : 'sk-...'}
                             />
                           </ConfigFieldCard>
-                          <ConfigFieldCard label="embedding_provider" description={<>Optional runtime embedding provider for semantic memory (requires sqlite-vec build): <code>openai</code> or <code>ollama</code>.</>}>
+                        </div>
+                      </div>
+                      <div className={`${sectionCardClass} mt-4`} style={sectionCardStyle}>
+                        <Text size="3" weight="bold">Embedding</Text>
+                        <Text size="1" color="gray" className="mt-1 block">
+                          Optional embedding runtime settings for semantic memory (requires sqlite-vec build).
+                        </Text>
+                        <div className="mt-4 space-y-3">
+                          <ConfigFieldCard label="embedding_provider" description={<>Optional runtime embedding provider: <code>openai</code> or <code>ollama</code>.</>}>
                             <TextField.Root
                               className="mt-2"
                               value={String(configDraft.embedding_provider || '')}

@@ -1010,9 +1010,9 @@ impl SetupApp {
             | "REFLECTOR_ENABLED"
             | "REFLECTOR_INTERVAL_MINS"
             | "MEMORY_TOKEN_BUDGET" => "App",
-            "LLM_PROVIDER" | "LLM_API_KEY" | "LLM_MODEL" | "LLM_BASE_URL"
-            | "EMBEDDING_PROVIDER" | "EMBEDDING_API_KEY" | "EMBEDDING_BASE_URL"
-            | "EMBEDDING_MODEL" | "EMBEDDING_DIM" => "Model",
+            "LLM_PROVIDER" | "LLM_API_KEY" | "LLM_MODEL" | "LLM_BASE_URL" => "Model",
+            "EMBEDDING_PROVIDER" | "EMBEDDING_API_KEY" | "EMBEDDING_BASE_URL"
+            | "EMBEDDING_MODEL" | "EMBEDDING_DIM" => "Embedding",
             "ENABLED_CHANNELS" | "TELEGRAM_BOT_TOKEN" | "BOT_USERNAME" | "DISCORD_BOT_TOKEN" => {
                 "Channel"
             }
