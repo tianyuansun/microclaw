@@ -1130,6 +1130,18 @@ impl Database {
         Ok(rows > 0)
     }
 
+    /// Clear conversational context for a chat without deleting chat metadata or memories.
+    /// This removes resumable session state and historical messages used to rebuild context.
+    pub fn clear_chat_context(&self, chat_id: i64) -> Result<bool, MicroClawError> {
+        let conn = self.lock_conn();
+        let tx = conn.unchecked_transaction()?;
+        let mut affected = 0usize;
+        affected += tx.execute("DELETE FROM sessions WHERE chat_id = ?1", params![chat_id])?;
+        affected += tx.execute("DELETE FROM messages WHERE chat_id = ?1", params![chat_id])?;
+        tx.commit()?;
+        Ok(affected > 0)
+    }
+
     pub fn delete_chat_data(&self, chat_id: i64) -> Result<bool, MicroClawError> {
         let conn = self.lock_conn();
         let tx = conn.unchecked_transaction()?;
@@ -2896,6 +2908,33 @@ mod tests {
         assert!(db.load_session(100).unwrap().is_none());
         // Delete again returns false
         assert!(!db.delete_session(100).unwrap());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_clear_chat_context_removes_session_and_messages_only() {
+        let (db, dir) = test_db();
+        db.upsert_chat(100, Some("chat-100"), "private").unwrap();
+        db.save_session(100, r#"[{"role":"user","content":"hi"}]"#)
+            .unwrap();
+        db.store_message(&StoredMessage {
+            id: "m1".into(),
+            chat_id: 100,
+            sender_name: "alice".into(),
+            content: "hello".into(),
+            is_from_bot: false,
+            timestamp: "2024-01-01T00:00:01Z".into(),
+        })
+        .unwrap();
+        db.insert_memory(Some(100), "User likes Rust", "PROFILE")
+            .unwrap();
+
+        assert!(db.clear_chat_context(100).unwrap());
+        assert!(db.load_session(100).unwrap().is_none());
+        assert!(db.get_recent_messages(100, 10).unwrap().is_empty());
+        assert!(!db.search_memories(100, "Rust", 10).unwrap().is_empty());
+        assert!(db.get_chat_type(100).unwrap().is_some());
+
         cleanup(&dir);
     }
 

@@ -89,8 +89,10 @@ async fn handle_message(
         })
         .await
         .unwrap_or(raw_chat_id);
-        let _ = call_blocking(state.db.clone(), move |db| db.delete_session(chat_id)).await;
-        let _ = bot.send_message(msg.chat.id, "Session cleared.").await;
+        let _ = call_blocking(state.db.clone(), move |db| db.clear_chat_context(chat_id)).await;
+        let _ = bot
+            .send_message(msg.chat.id, "Context cleared (session + chat history).")
+            .await;
         return Ok(());
     }
 

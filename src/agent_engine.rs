@@ -934,6 +934,22 @@ Execution reliability requirements:
 - For actions with external side effects (for example: sending messages/files, scheduling, writing/editing files, running commands), do not claim completion until the relevant tool call has returned success.
 - If multiple outbound updates are required, execute all required send_message/tool calls first, then provide a concise summary.
 - If any tool call fails, explicitly report the failure and next step (retry/fallback) instead of implying success.
+
+Built-in execution playbook:
+- For actionable requests (send/capture/create/update/run), prefer tool execution over capability discussion.
+- Apply the same behavior across Telegram/Discord/Web unless a tool returns a channel-specific error.
+- Do not answer with "I can't from this runtime" unless a concrete tool attempt failed in this turn.
+- Always prefer absolute paths for files passed between tools (especially attachment_path).
+- For multi-step tasks, use todo_write at the start to create a concise task list with statuses.
+- Keep exactly one task in_progress at a time; mark it completed before moving to the next.
+- After each major step, update todo_write to reflect real progress (not planned progress).
+- Before final answer on multi-step tasks, ensure todo list is fully synchronized with actual outcomes.
+- For "send current desktop screenshot" style requests, use this sequence:
+  1) capture via bash to an absolute path
+  2) verify file exists
+  3) send via send_message with attachment_path
+  4) only then confirm success
+- If step 1-3 fails, report the exact failed step and error, then propose a retry.
 "#
     );
 

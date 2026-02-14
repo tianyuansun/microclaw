@@ -57,10 +57,13 @@ impl EventHandler for Handler {
         // Handle /reset command
         if text.trim() == "/reset" {
             let _ = call_blocking(self.app_state.db.clone(), move |db| {
-                db.delete_session(channel_id)
+                db.clear_chat_context(channel_id)
             })
             .await;
-            let _ = msg.channel_id.say(&ctx.http, "Session cleared.").await;
+            let _ = msg
+                .channel_id
+                .say(&ctx.http, "Context cleared (session + chat history).")
+                .await;
             return;
         }
 
