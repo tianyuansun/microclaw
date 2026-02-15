@@ -5,8 +5,8 @@
       <stop offset="0.45" stop-color="#6366F1"/>
       <stop offset="1" stop-color="#0EA5E9"/>
     </linearGradient>
-    <marker id="tarrow" markerWidth="12" markerHeight="12" refX="8" refY="6" orient="auto">
-      <path d="M1 1L9 6L1 11" stroke="#1E1B4B" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <marker id="tarrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M1 1L6 4L1 7" stroke="#1E1B4B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     </marker>
   </defs>
 

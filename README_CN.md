@@ -45,6 +45,10 @@
 
 每条消息触发一个 **智能体循环**：模型可以调用工具、检查结果、再调用更多工具，经过多步推理后再回复。默认每次请求最多 100 次迭代。
 
+<p align="center">
+  <img src="docs/assets/readme/microclaw-architecture.svg" alt="MicroClaw 架构总览" width="96%" />
+</p>
+
 ## 博客文章
 
 关于项目架构与设计取舍的介绍文章：**[Building MicroClaw: An Agentic AI Assistant in Rust That Lives in Your Chats](https://microclaw.ai/blog/building-microclaw)**
