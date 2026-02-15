@@ -6,7 +6,17 @@
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pvmezwkAk5)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+
+<p align="center">
+  <img src="screenshots/headline.png" alt="MicroClaw headline logo" width="92%" />
+</p>
+
+
 > **注意：** 本项目正在积极开发中，功能可能会变化，欢迎贡献！
+
+
+一个住在聊天平台里的 AI 智能助手，灵感来自 [nanoclaw](https://github.com/gavrielc/nanoclaw/)，参考了 nanoclaw 的部分思路。MicroClaw 采用“渠道无关核心 + 平台适配器”架构：当前支持 Telegram、Discord、Slack、飞书/Lark 和 Web，后续可持续扩展更多平台。它支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
+
 
 <p align="center">
   <img src="screenshots/screenshot1.png" width="45%" />
@@ -14,34 +24,109 @@
   <img src="screenshots/screenshot2.png" width="45%" />
 </p>
 
-一个住在聊天平台里的 AI 智能助手，灵感来自 [nanoclaw](https://github.com/gavrielc/nanoclaw/)，参考了 nanoclaw 的部分思路。MicroClaw 采用“渠道无关核心 + 平台适配器”架构：当前支持 Telegram、Discord、Slack、飞书/Lark 和 Web，后续可持续扩展更多平台。它支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
+## 目录
+
+- [安装](#安装)
+- [工作原理](#工作原理)
+- [功能特性](#功能特性)
+- [工具列表](#工具列表)
+- [记忆系统](#记忆系统)
+- [技能系统](#技能系统)
+- [计划与执行](#计划与执行)
+- [定时任务](#定时任务)
+- [本地 Web UI（跨渠道历史）](#本地-web-ui跨渠道历史)
+- [发布](#发布)
+- [配置](#配置)
+- [配置项](#配置项)
+- [平台行为](#平台行为)
+- [多聊天权限模型](#多聊天权限模型)
+- [使用示例](#使用示例)
+- [新增平台适配器（Adding a New Platform Adapter）](#新增平台适配器adding-a-new-platform-adapter)
+- [许可证](#许可证)
+
+## 安装
+
+### 一键安装（推荐）
+
+```sh
+curl -fsSL https://microclaw.ai/install.sh | bash
+```
+
+### Windows PowerShell 安装
+
+```powershell
+iwr https://microclaw.ai/install.ps1 -UseBasicParsing | iex
+```
+
+安装脚本仅执行一种方式：
+- 从最新 GitHub Release 下载匹配平台的预编译二进制
+- 不在 `install.sh` 内回退到 Homebrew/Cargo（请使用下面的独立方式）
+
+### 预检诊断（doctor）
+
+在首次启动或排障时，先运行跨平台诊断：
+
+```sh
+microclaw doctor
+```
+
+如果要提交支持工单，建议附加机器可读输出：
+
+```sh
+microclaw doctor --json
+```
+
+会检查：PATH、shell 运行时、Node/npm、`agent-browser`、Windows PowerShell 执行策略、以及 `microclaw.data/mcp.json` 里的 MCP 命令依赖。
+
+### 卸载（脚本）
+
+macOS/Linux：
+
+```sh
+curl -fsSL https://microclaw.ai/uninstall.sh | bash
+```
+
+Windows PowerShell：
+
+```powershell
+iwr https://microclaw.ai/uninstall.ps1 -UseBasicParsing | iex
+```
+
+### Homebrew (macOS)
+
+```sh
+brew tap everettjf/tap
+brew install microclaw
+```
+
+### 从源码构建
+
+```sh
+git clone https://github.com/microclaw/microclaw.git
+cd microclaw
+cargo build --release
+cp target/release/microclaw /usr/local/bin/
+```
+
+可选语义记忆构建（默认关闭 sqlite-vec）：
+
+```sh
+cargo build --release --features sqlite-vec
+```
+
+首次启用 sqlite-vec（最短 3 条命令）：
+
+```sh
+cargo run --features sqlite-vec -- setup
+cargo run --features sqlite-vec -- start
+sqlite3 microclaw.data/runtime/microclaw.db "SELECT id, chat_id, chat_channel, external_chat_id, category, embedding_model FROM memories ORDER BY id DESC LIMIT 20;"
+```
+
+在 `setup` 里至少设置：
+- `embedding_provider` = `openai` 或 `ollama`
+- 对应 provider 的 key/base URL/model
 
 ## 工作原理
-
-<p align="center">
-  <img src="docs/assets/readme/agent-loop.svg" alt="MicroClaw 智能体循环图" width="92%" />
-</p>
-
-```
-聊天消息（通过平台适配器接入）
-    |
-    v
- 存入 SQLite --> 加载聊天历史 + 记忆
-                    |
-                    v
-              选定的 LLM API（带工具）
-                    |
-               stop_reason?
-              /            \
-         end_turn        tool_use
-            |               |
-            v               v
-       发送回复        执行工具
-                         |
-                         v
-                   将结果反馈给
-                   模型（循环）
-```
 
 每条消息触发一个 **智能体循环**：模型可以调用工具、检查结果、再调用更多工具，经过多步推理后再回复。默认每次请求最多 100 次迭代。
 
@@ -227,88 +312,6 @@ Todo 列表存储在 `microclaw.data/runtime/groups/{chat_id}/TODO.json`，跨�
 "恢复任务 #3"
 "取消任务 #3"
 ```
-
-## 安装
-
-### 一键安装（推荐）
-
-```sh
-curl -fsSL https://microclaw.ai/install.sh | bash
-```
-
-### Windows PowerShell 安装
-
-```powershell
-iwr https://microclaw.ai/install.ps1 -UseBasicParsing | iex
-```
-
-安装脚本仅执行一种方式：
-- 从最新 GitHub Release 下载匹配平台的预编译二进制
-- 不在 `install.sh` 内回退到 Homebrew/Cargo（请使用下面的独立方式）
-
-### 预检诊断（doctor）
-
-在首次启动或排障时，先运行跨平台诊断：
-
-```sh
-microclaw doctor
-```
-
-如果要提交支持工单，建议附加机器可读输出：
-
-```sh
-microclaw doctor --json
-```
-
-会检查：PATH、shell 运行时、Node/npm、`agent-browser`、Windows PowerShell 执行策略、以及 `microclaw.data/mcp.json` 里的 MCP 命令依赖。
-
-### 卸载（脚本）
-
-macOS/Linux：
-
-```sh
-curl -fsSL https://microclaw.ai/uninstall.sh | bash
-```
-
-Windows PowerShell：
-
-```powershell
-iwr https://microclaw.ai/uninstall.ps1 -UseBasicParsing | iex
-```
-
-### Homebrew (macOS)
-
-```sh
-brew tap everettjf/tap
-brew install microclaw
-```
-
-### 从源码构建
-
-```sh
-git clone https://github.com/microclaw/microclaw.git
-cd microclaw
-cargo build --release
-cp target/release/microclaw /usr/local/bin/
-```
-
-可选语义记忆构建（默认关闭 sqlite-vec）：
-
-```sh
-cargo build --release --features sqlite-vec
-```
-
-首次启用 sqlite-vec（最短 3 条命令）：
-
-```sh
-cargo run --features sqlite-vec -- setup
-cargo run --features sqlite-vec -- start
-sqlite3 microclaw.data/runtime/microclaw.db "SELECT id, chat_id, chat_channel, external_chat_id, category, embedding_model FROM memories ORDER BY id DESC LIMIT 20;"
-```
-
-在 `setup` 里至少设置：
-- `embedding_provider` = `openai` 或 `ollama`
-- 对应 provider 的 key/base URL/model
 
 ## 本地 Web UI（跨渠道历史）
 
