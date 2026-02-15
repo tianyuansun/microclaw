@@ -14,7 +14,7 @@
   <img src="screenshots/screenshot2.png" width="45%" />
 </p>
 
-一个住在聊天平台里的 AI 智能助手，灵感来自 [nanoclaw](https://github.com/gavrielc/nanoclaw/)，参考了 nanoclaw 的部分思路。MicroClaw 采用“渠道无关核心 + 平台适配器”架构：当前支持 Telegram、Discord 和 Web，后续可持续扩展更多平台。它支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
+一个住在聊天平台里的 AI 智能助手，灵感来自 [nanoclaw](https://github.com/gavrielc/nanoclaw/)，参考了 nanoclaw 的部分思路。MicroClaw 采用“渠道无关核心 + 平台适配器”架构：当前支持 Telegram、Discord、Slack、飞书/Lark 和 Web，后续可持续扩展更多平台。它支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
 
 ## 工作原理
 
@@ -60,7 +60,7 @@
 - **提及追赶（Telegram 群）** -- 在 Telegram 群里被 @ 时，机器人会读取上次回复以来的所有消息
 - **持续输入指示** -- 处理期间持续显示"正在输入"状态
 - **持久化记忆** -- 全局和每个聊天的 AGENTS.md 文件，每次请求都会加载
-- **消息分割** -- 长回复自动在换行处分割，适配不同平台长度限制（Telegram 4096 / Discord 2000）
+- **消息分割** -- 长回复自动在换行处分割，适配不同平台长度限制（Telegram 4096 / Discord 2000 / Slack 4000 / 飞书 4000）
 
 ## 工具列表
 
@@ -122,7 +122,7 @@ microclaw.data/runtime/groups/
 MicroClaw 现在会保存“按渠道隔离”的聊天身份：
 
 - `internal chat_id`：SQLite 内部主键（用于 sessions/messages/tasks）
-- `channel + external_chat_id`：来自 Telegram/Discord/Web 的源聊天身份
+- `channel + external_chat_id`：来自 Telegram/Discord/Slack/飞书/Web 的源聊天身份
 
 这样可避免不同渠道使用相同数字 id 时发生冲突。历史数据会在启动时自动迁移补齐。
 
@@ -290,7 +290,7 @@ sqlite3 microclaw.data/runtime/microclaw.db "SELECT id, chat_id, chat_channel, e
 
 当 `web_enabled: true` 时，MicroClaw 会启动本地 Web UI（默认 `http://127.0.0.1:10961`）。
 
-- 左侧会话列表会展示 SQLite 中所有渠道聊天（`telegram`、`discord`、`web`）
+- 左侧会话列表会展示 SQLite 中所有渠道聊天（`telegram`、`discord`、`slack`、`feishu`、`web`）
 - 支持历史查看与管理（刷新 / 清理上下文 / 删除）
 - 默认对非 `web` 渠道是只读（发送请在原渠道进行）
 - 如果当前没有会话，Web UI 会自动生成一个 `session-YYYYMMDDHHmmss` 格式的会话键
@@ -310,7 +310,7 @@ sqlite3 microclaw.data/runtime/microclaw.db "SELECT id, chat_id, chat_channel, e
 
 ### 1. 创建渠道机器人凭据
 
-至少启用一个渠道：Telegram、Discord，或 Web UI。
+至少启用一个渠道：Telegram、Discord、Slack、飞书/Lark，或 Web UI。
 
 Telegram（可选）：
 1. 打开 Telegram，搜索 [@BotFather](https://t.me/BotFather)
@@ -334,6 +334,20 @@ Discord（可选）：
 3. 复制 Bot token，保存为 `discord_bot_token`
 4. 邀请 Bot 进入服务器，并授予发送消息、读取历史、被提及响应等权限
 5. 可选：配置 `discord_allowed_channels` 限制可回复频道
+
+Slack（可选，Socket Mode）：
+1. 在 [api.slack.com/apps](https://api.slack.com/apps) 创建应用
+2. 启用 Socket Mode，获取 `app_token`（以 `xapp-` 开头）
+3. 添加 `bot_token` 权限并安装到工作区，获取 `bot_token`（以 `xoxb-` 开头）
+4. 订阅 `message` 和 `app_mention` 事件
+5. 在配置文件的 `channels.slack` 下配置
+
+飞书/Lark（可选）：
+1. 在[飞书开放平台](https://open.feishu.cn/app)创建应用（国际版使用 [Lark Developer](https://open.larksuite.com/app)）
+2. 在应用凭证页获取 `app_id` 和 `app_secret`
+3. 开启 `im:message` 和 `im.message.receive_v1` 事件订阅
+4. 选择连接方式：WebSocket 长连接（默认，无需公网地址）或 Webhook
+5. 在配置文件的 `channels.feishu` 下配置；国际版设置 `domain: "lark"`
 
 ### 2. 获取 LLM API Key
 
@@ -475,7 +489,7 @@ microclaw gateway uninstall
 | `embedding_model` | 否 | provider 默认 | embedding 模型 ID |
 | `embedding_dim` | 否 | provider 默认 | sqlite-vec 索引使用的向量维度 |
 
-`*` 需要至少启用一个渠道：`telegram_bot_token`、`discord_bot_token`，或 `web_enabled: true`。
+`*` 需要至少启用一个渠道：`telegram_bot_token`、`discord_bot_token`、`channels.slack`、`channels.feishu`，或 `web_enabled: true`。
 
 ### 支持的 `llm_provider` 值
 
@@ -487,6 +501,10 @@ microclaw gateway uninstall
 - Telegram 群聊：仅在被 `@bot_username` 提及时回复；但仍会存储所有消息用于上下文
 - Discord DM：每条消息都会回复
 - Discord 服务器频道：被 @ 提及时回复；可通过 `discord_allowed_channels` 限定频道
+- Slack DM：每条消息都会回复
+- Slack 频道：被 @ 提及时回复；可通过 `allowed_channels` 限定
+- 飞书/Lark 单聊（p2p）：每条消息都会回复
+- 飞书/Lark 群聊：被 @ 提及时回复；可通过 `allowed_chats` 限定
 
 **追赶行为（Telegram 群）：** 被 @ 时，机器人会加载该群上次回复以来的所有消息（而不是仅最近 N 条），使群聊交互更具上下文。
 
