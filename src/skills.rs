@@ -271,15 +271,48 @@ fn missing_deps(deps: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Attempt to convert single-line frontmatter (`--- name: x description: y --- body`)
+/// into standard multi-line YAML format for parsing.
+fn normalize_single_line_frontmatter(content: &str) -> Option<String> {
+    if !content.starts_with("--- ") {
+        return None;
+    }
+    let after_open = &content[4..]; // skip "--- "
+    let close_idx = after_open.find(" ---")?;
+    let yaml_part = after_open[..close_idx].trim();
+    if yaml_part.is_empty() {
+        return None;
+    }
+    let body = after_open[close_idx + 4..].trim_start();
+
+    // Insert newlines before known frontmatter keys so serde_yaml can parse them
+    let known_keys: &[&str] = &[
+        "name:", "description:", "license:", "platforms:", "deps:",
+        "compatibility:", "source:", "version:", "updated_at:",
+    ];
+    let mut yaml = yaml_part.to_string();
+    for key in known_keys {
+        yaml = yaml.replacen(&format!(" {key}"), &format!("\n{key}"), 1);
+    }
+
+    Some(format!("---\n{yaml}\n---\n{body}"))
+}
+
 /// Parse a SKILL.md file, extracting frontmatter via YAML and body.
 /// Returns None if the file lacks valid frontmatter with a name field.
 fn parse_skill_md(content: &str, dir_path: &std::path::Path) -> Option<(SkillMetadata, String)> {
     let trimmed = content.trim_start_matches('\u{feff}');
-    if !trimmed.starts_with("---\n") && !trimmed.starts_with("---\r\n") {
-        return None;
-    }
 
-    let mut lines = trimmed.lines();
+    // Try normalizing single-line frontmatter if standard format not found
+    let normalized;
+    let input = if !trimmed.starts_with("---\n") && !trimmed.starts_with("---\r\n") {
+        normalized = normalize_single_line_frontmatter(trimmed)?;
+        &normalized
+    } else {
+        trimmed
+    };
+
+    let mut lines = input.lines();
     let _ = lines.next()?; // opening ---
 
     let mut yaml_block = String::new();
@@ -323,16 +356,16 @@ fn parse_skill_md(content: &str, dir_path: &std::path::Path) -> Option<(SkillMet
     deps.sort();
     deps.dedup();
 
-    let header_len = if let Some(idx) = trimmed.find("\n---\n") {
+    let header_len = if let Some(idx) = input.find("\n---\n") {
         idx + 5
-    } else if let Some(idx) = trimmed.find("\n...\n") {
+    } else if let Some(idx) = input.find("\n...\n") {
         idx + 5
     } else {
         // fallback to consumed length from line-by-line scan
         4 + consumed
     };
 
-    let body = trimmed
+    let body = input
         .get(header_len..)
         .unwrap_or_default()
         .trim()
@@ -413,6 +446,30 @@ Instructions.
         let content = "Just some markdown without frontmatter.";
         let dir = PathBuf::from("/tmp/skills/test");
         assert!(parse_skill_md(content, &dir).is_none());
+    }
+
+    #[test]
+    fn test_parse_skill_md_single_line_frontmatter() {
+        let content = "--- name: frontend-design description: Create distinctive UIs license: Complete terms in LICENSE.txt --- This skill guides creation of distinctive interfaces.";
+        let dir = PathBuf::from("/tmp/skills/frontend-design");
+        let result = parse_skill_md(content, &dir);
+        assert!(result.is_some(), "single-line frontmatter should parse");
+        let (meta, body) = result.unwrap();
+        assert_eq!(meta.name, "frontend-design");
+        assert!(meta.description.starts_with("Create distinctive"));
+        assert!(body.contains("This skill guides"));
+    }
+
+    #[test]
+    fn test_normalize_single_line_frontmatter() {
+        let content = "--- name: test description: A test skill --- Body here";
+        let result = normalize_single_line_frontmatter(content);
+        assert!(result.is_some());
+        let norm = result.unwrap();
+        assert!(norm.starts_with("---\n"));
+        assert!(norm.contains("\nname: test"));
+        assert!(norm.contains("\ndescription: A test skill"));
+        assert!(norm.contains("---\nBody here"));
     }
 
     #[test]

@@ -158,7 +158,19 @@ Rules:
 - Category must be exactly one of: PROFILE (user attributes/preferences), KNOWLEDGE (facts/expertise), EVENT (significant things that happened)
 - If a new memory updates or supersedes an existing one, add "supersedes_id": <id> to replace it
 - Output ONLY valid JSON array: [{"content":"...","category":"PROFILE","supersedes_id":null}]
-- If nothing worth remembering: []"#;
+- If nothing worth remembering: []
+
+CRITICAL — how to memorize bugs and problems:
+- NEVER describe broken behavior as a fact (e.g. "tool calls were broken", "agent typed tool calls as text"). This causes the agent to repeat the broken behavior in future sessions.
+- Instead, frame bugs as ACTION ITEMS with the correct behavior. Use "TODO: fix" or "ensure" phrasing that tells the agent what TO DO, not what went wrong.
+- Examples:
+  BAD: "proactive-agent skill broke tool calling — tool calls posted as text" (agent reads this and keeps doing it)
+  GOOD: "TODO: ensure tool calls always execute via tool system, never output as plain text"
+  BAD: "got 401 authentication error on Discord"
+  GOOD: "TODO: check API key config if Discord auth fails"
+  BAD: "user said agent isn't following instructions"
+  GOOD: "TODO: strictly follow TOOLS.md rules for every tool call"
+- The memory should tell the agent HOW TO BEHAVE CORRECTLY, never describe the broken behavior."#;
 
 fn jaccard_similar(a: &str, b: &str, threshold: f64) -> bool {
     use std::collections::HashSet;
@@ -555,7 +567,7 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
             #[cfg(feature = "sqlite-vec")]
             {
                 if let Some(provider) = &state.embedding {
-                    if let Ok(query_vec) = provider.embed(content).await {
+                    if let Ok(query_vec) = provider.embed(&content).await {
                         let nearest = call_blocking(state.db.clone(), move |db| {
                             db.knn_memories(chat_id, &query_vec, 1)
                         })
