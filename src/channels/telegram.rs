@@ -631,7 +631,13 @@ async fn handle_message(
             }
 
             if !response.is_empty() {
-                send_response(&bot, msg.chat.id, &response, msg.message_thread_id.map(|t| t.0)).await;
+                send_response(
+                    &bot,
+                    msg.chat.id,
+                    &response,
+                    msg.message_thread_id.map(|t| t.0),
+                )
+                .await;
 
                 // Store bot response
                 let bot_msg = StoredMessage {
@@ -652,7 +658,13 @@ async fn handle_message(
                 );
             } else {
                 let fallback = "I couldn't produce a visible reply after an automatic retry. Please try again.".to_string();
-                send_response(&bot, msg.chat.id, &fallback, msg.message_thread_id.map(|t| t.0)).await;
+                send_response(
+                    &bot,
+                    msg.chat.id,
+                    &fallback,
+                    msg.message_thread_id.map(|t| t.0),
+                )
+                .await;
                 let bot_msg = StoredMessage {
                     id: uuid::Uuid::new_v4().to_string(),
                     chat_id,
@@ -871,16 +883,21 @@ fn render_markdown_v2_safe(text: &str) -> String {
     out
 }
 
-async fn send_telegram_markdown_or_plain(bot: &Bot, chat_id: ChatId, text: &str, message_thread_id: Option<i32>) {
+async fn send_telegram_markdown_or_plain(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: &str,
+    message_thread_id: Option<i32>,
+) {
     let markdown_text = render_markdown_v2_safe(text);
     let mut req = bot
         .send_message(chat_id, markdown_text)
         .parse_mode(ParseMode::MarkdownV2);
-    
+
     if let Some(tid) = message_thread_id {
         req = req.message_thread_id(ThreadId(MessageId(tid)));
     }
-    
+
     if let Err(err) = req.await {
         warn!("Telegram MarkdownV2 send failed, falling back to plain text: {err}");
         let mut plain_req = bot.send_message(chat_id, text);
