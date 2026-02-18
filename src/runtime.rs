@@ -55,48 +55,58 @@ pub async fn run(
     let mut telegram_bot: Option<teloxide::Bot> = None;
     let mut discord_token: Option<String> = None;
     let mut has_slack = false;
+    let mut has_web = false;
 
-    if let Some(tg_cfg) = config.channel_config::<TelegramChannelConfig>("telegram") {
-        if !tg_cfg.bot_token.trim().is_empty() {
-            let bot = teloxide::Bot::new(&tg_cfg.bot_token);
-            telegram_bot = Some(bot.clone());
-            registry.register(Arc::new(TelegramAdapter::new(bot, tg_cfg)));
+    if config.channel_enabled("telegram") {
+        if let Some(tg_cfg) = config.channel_config::<TelegramChannelConfig>("telegram") {
+            if !tg_cfg.bot_token.trim().is_empty() {
+                let bot = teloxide::Bot::new(&tg_cfg.bot_token);
+                telegram_bot = Some(bot.clone());
+                registry.register(Arc::new(TelegramAdapter::new(bot, tg_cfg)));
+            }
         }
     }
 
-    if let Some(dc_cfg) =
-        config.channel_config::<crate::channels::discord::DiscordChannelConfig>("discord")
-    {
-        if !dc_cfg.bot_token.trim().is_empty() {
-            discord_token = Some(dc_cfg.bot_token.clone());
-            registry.register(Arc::new(DiscordAdapter::new(dc_cfg.bot_token)));
+    if config.channel_enabled("discord") {
+        if let Some(dc_cfg) =
+            config.channel_config::<crate::channels::discord::DiscordChannelConfig>("discord")
+        {
+            if !dc_cfg.bot_token.trim().is_empty() {
+                discord_token = Some(dc_cfg.bot_token.clone());
+                registry.register(Arc::new(DiscordAdapter::new(dc_cfg.bot_token)));
+            }
         }
     }
 
-    if let Some(slack_cfg) =
-        config.channel_config::<crate::channels::slack::SlackChannelConfig>("slack")
-    {
-        if !slack_cfg.bot_token.trim().is_empty() && !slack_cfg.app_token.trim().is_empty() {
-            has_slack = true;
-            registry.register(Arc::new(SlackAdapter::new(slack_cfg.bot_token)));
+    if config.channel_enabled("slack") {
+        if let Some(slack_cfg) =
+            config.channel_config::<crate::channels::slack::SlackChannelConfig>("slack")
+        {
+            if !slack_cfg.bot_token.trim().is_empty() && !slack_cfg.app_token.trim().is_empty() {
+                has_slack = true;
+                registry.register(Arc::new(SlackAdapter::new(slack_cfg.bot_token)));
+            }
         }
     }
 
     let mut has_feishu = false;
-    if let Some(feishu_cfg) =
-        config.channel_config::<crate::channels::feishu::FeishuChannelConfig>("feishu")
-    {
-        if !feishu_cfg.app_id.trim().is_empty() && !feishu_cfg.app_secret.trim().is_empty() {
-            has_feishu = true;
-            registry.register(Arc::new(FeishuAdapter::new(
-                feishu_cfg.app_id.clone(),
-                feishu_cfg.app_secret.clone(),
-                feishu_cfg.domain.clone(),
-            )));
+    if config.channel_enabled("feishu") {
+        if let Some(feishu_cfg) =
+            config.channel_config::<crate::channels::feishu::FeishuChannelConfig>("feishu")
+        {
+            if !feishu_cfg.app_id.trim().is_empty() && !feishu_cfg.app_secret.trim().is_empty() {
+                has_feishu = true;
+                registry.register(Arc::new(FeishuAdapter::new(
+                    feishu_cfg.app_id.clone(),
+                    feishu_cfg.app_secret.clone(),
+                    feishu_cfg.domain.clone(),
+                )));
+            }
         }
     }
 
-    if config.web_enabled {
+    if config.channel_enabled("web") {
+        has_web = true;
         registry.register(Arc::new(WebAdapter));
     }
 
@@ -147,7 +157,7 @@ pub async fn run(
         });
     }
 
-    if state.config.web_enabled {
+    if has_web {
         let web_state = state.clone();
         info!(
             "Starting Web UI server on {}:{}",
@@ -160,7 +170,7 @@ pub async fn run(
 
     if let Some(bot) = telegram_bot {
         crate::telegram::start_telegram_bot(state, bot).await
-    } else if state.config.web_enabled || discord_token.is_some() || has_slack || has_feishu {
+    } else if has_web || discord_token.is_some() || has_slack || has_feishu {
         info!("Running without Telegram adapter; waiting for other channels");
         tokio::signal::ctrl_c()
             .await
@@ -168,7 +178,7 @@ pub async fn run(
         Ok(())
     } else {
         Err(anyhow!(
-            "No channel is enabled. Configure Telegram, Discord, Slack, Feishu, or web_enabled=true."
+            "No channel is enabled. Configure channels.<name>.enabled (or legacy channel settings) for Telegram, Discord, Slack, Feishu, or web."
         ))
     }
 }

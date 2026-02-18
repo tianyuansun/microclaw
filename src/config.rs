@@ -280,6 +280,38 @@ impl Config {
         Ok(None)
     }
 
+    fn inferred_channel_enabled(&self, channel: &str) -> bool {
+        match channel {
+            "telegram" => {
+                !self.telegram_bot_token.trim().is_empty() || self.channels.contains_key("telegram")
+            }
+            "discord" => {
+                self.discord_bot_token
+                    .as_deref()
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false)
+                    || self.channels.contains_key("discord")
+            }
+            "web" => self.web_enabled || self.channels.contains_key("web"),
+            _ => self.channels.contains_key(channel),
+        }
+    }
+
+    fn explicit_channel_enabled(&self, channel: &str) -> Option<bool> {
+        self.channels
+            .get(channel)
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
+    }
+
+    pub fn channel_enabled(&self, channel: &str) -> bool {
+        let needle = channel.trim().to_lowercase();
+        if let Some(explicit) = self.explicit_channel_enabled(&needle) {
+            return explicit;
+        }
+        self.inferred_channel_enabled(&needle)
+    }
+
     /// Load config from YAML file.
     pub fn load() -> Result<Self, MicroClawError> {
         let yaml_path = Self::resolve_config_path()?;
@@ -359,9 +391,16 @@ impl Config {
                 self.embedding_dim = None;
             }
         }
-        if self.web_enabled && !is_local_web_host(&self.web_host) && self.web_auth_token.is_none() {
+        let web_enabled_effective = self
+            .explicit_channel_enabled("web")
+            .unwrap_or(self.web_enabled);
+        if web_enabled_effective
+            && !is_local_web_host(&self.web_host)
+            && self.web_auth_token.is_none()
+        {
             return Err(MicroClawError::Config(
-                "web_auth_token is required when web_enabled=true and web_host is not local".into(),
+                "web_auth_token is required when web channel is enabled and web_host is not local"
+                    .into(),
             ));
         }
         if self.web_max_inflight_per_session == 0 {
@@ -412,6 +451,7 @@ impl Config {
                 self.channels.insert(
                     "telegram".into(),
                     serde_yaml::to_value(serde_json::json!({
+                        "enabled": true,
                         "bot_token": self.telegram_bot_token,
                         "bot_username": self.bot_username,
                         "allowed_groups": self.allowed_groups,
@@ -424,6 +464,7 @@ impl Config {
                     self.channels.insert(
                         "discord".into(),
                         serde_yaml::to_value(serde_json::json!({
+                            "enabled": true,
                             "bot_token": token,
                             "allowed_channels": self.discord_allowed_channels,
                         }))
@@ -446,21 +487,27 @@ impl Config {
         }
 
         // Validate required fields
-        let has_telegram =
+        let configured_telegram =
             !self.telegram_bot_token.trim().is_empty() || self.channels.contains_key("telegram");
-        let has_discord = self
+        let configured_discord = self
             .discord_bot_token
             .as_deref()
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false)
             || self.channels.contains_key("discord");
-        let has_slack = self.channels.contains_key("slack");
-        let has_feishu = self.channels.contains_key("feishu");
-        let has_web = self.web_enabled || self.channels.contains_key("web");
+        let configured_slack = self.channels.contains_key("slack");
+        let configured_feishu = self.channels.contains_key("feishu");
+        let configured_web = self.web_enabled || self.channels.contains_key("web");
+
+        let has_telegram = self.channel_enabled("telegram") && configured_telegram;
+        let has_discord = self.channel_enabled("discord") && configured_discord;
+        let has_slack = self.channel_enabled("slack") && configured_slack;
+        let has_feishu = self.channel_enabled("feishu") && configured_feishu;
+        let has_web = self.channel_enabled("web") && configured_web;
 
         if !(has_telegram || has_discord || has_slack || has_feishu || has_web) {
             return Err(MicroClawError::Config(
-                "At least one channel must be enabled: telegram_bot_token, discord_bot_token, channels.slack, channels.feishu, or web_enabled=true".into(),
+                "At least one channel must be enabled and configured (via channels.<name>.enabled or legacy channel settings)".into(),
             ));
         }
         if self.api_key.is_empty() && !provider_allows_empty_api_key(&self.llm_provider) {
@@ -817,6 +864,27 @@ mod tests {
     }
 
     #[test]
+    fn test_post_deserialize_channel_enabled_flag_overrides_legacy_inference() {
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\ndiscord_bot_token: discord_tok\napi_key: key\nchannels:\n  telegram:\n    enabled: false\n  discord:\n    enabled: true\n  web:\n    enabled: false\n";
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        config.post_deserialize().unwrap();
+
+        assert!(!config.channel_enabled("telegram"));
+        assert!(config.channel_enabled("discord"));
+        assert!(!config.channel_enabled("web"));
+    }
+
+    #[test]
+    fn test_post_deserialize_channel_enabled_flag_controls_web() {
+        let yaml =
+            "api_key: key\ndiscord_bot_token: discord_tok\nchannels:\n  web:\n    enabled: false\n";
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        config.post_deserialize().unwrap();
+
+        assert!(!config.channel_enabled("web"));
+    }
+
+    #[test]
     fn test_post_deserialize_openai_default_model() {
         let yaml =
             "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nllm_provider: openai\n";
@@ -998,7 +1066,7 @@ mod tests {
         let err = config.post_deserialize().unwrap_err();
         assert!(err
             .to_string()
-            .contains("web_auth_token is required when web_enabled=true"));
+            .contains("web_auth_token is required when web channel is enabled"));
     }
 
     #[test]

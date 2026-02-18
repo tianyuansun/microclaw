@@ -358,7 +358,7 @@ struct PickerState {
 
 impl SetupApp {
     fn channel_options() -> Vec<&'static str> {
-        let mut opts = vec!["telegram", "discord"];
+        let mut opts = vec!["web", "telegram", "discord"];
         for ch in DYNAMIC_CHANNELS {
             opts.push(ch.name);
         }
@@ -380,7 +380,7 @@ impl SetupApp {
         let enabled_channels = existing
             .get("ENABLED_CHANNELS")
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(|| "web".into());
 
         let mut app = Self {
             fields: vec![
@@ -588,29 +588,50 @@ impl SetupApp {
                 if let Ok(config) = serde_yaml::from_str::<crate::config::Config>(&content) {
                     let mut map = HashMap::new();
                     let mut enabled = Vec::new();
-                    if !config.telegram_bot_token.trim().is_empty() {
-                        enabled.push("telegram");
-                    }
-                    if config
-                        .discord_bot_token
-                        .as_deref()
-                        .map(|v| !v.trim().is_empty())
-                        .unwrap_or(false)
-                    {
-                        enabled.push("discord");
-                    }
-                    for ch in DYNAMIC_CHANNELS {
-                        if config.channels.contains_key(ch.name) {
-                            enabled.push(ch.name);
+                    for channel in Self::channel_options() {
+                        if config.channel_enabled(channel) {
+                            enabled.push(channel.to_string());
                         }
                     }
                     map.insert("ENABLED_CHANNELS".into(), enabled.join(","));
-                    map.insert("TELEGRAM_BOT_TOKEN".into(), config.telegram_bot_token);
-                    map.insert("BOT_USERNAME".into(), config.bot_username);
-                    map.insert(
-                        "DISCORD_BOT_TOKEN".into(),
-                        config.discord_bot_token.unwrap_or_default(),
-                    );
+                    let telegram_bot_token = if !config.telegram_bot_token.trim().is_empty() {
+                        config.telegram_bot_token
+                    } else {
+                        config
+                            .channels
+                            .get("telegram")
+                            .and_then(|v| v.get("bot_token"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    let bot_username = if !config.bot_username.trim().is_empty() {
+                        config.bot_username
+                    } else {
+                        config
+                            .channels
+                            .get("telegram")
+                            .and_then(|v| v.get("bot_username"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    let discord_bot_token = if let Some(v) =
+                        config.discord_bot_token.filter(|v| !v.trim().is_empty())
+                    {
+                        v
+                    } else {
+                        config
+                            .channels
+                            .get("discord")
+                            .and_then(|v| v.get("bot_token"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    map.insert("TELEGRAM_BOT_TOKEN".into(), telegram_bot_token);
+                    map.insert("BOT_USERNAME".into(), bot_username);
+                    map.insert("DISCORD_BOT_TOKEN".into(), discord_bot_token);
                     // Extract dynamic channel configs
                     for ch in DYNAMIC_CHANNELS {
                         if let Some(ch_map) = config.channels.get(ch.name) {
@@ -669,22 +690,47 @@ impl SetupApp {
     }
 
     fn next(&mut self) {
-        if self.selected + 1 < self.fields.len() {
-            self.selected += 1;
+        let visible = self.visible_field_indices();
+        if visible.is_empty() {
+            return;
+        }
+        if let Some(pos) = visible.iter().position(|idx| *idx == self.selected) {
+            if pos + 1 < visible.len() {
+                self.selected = visible[pos + 1];
+            }
+        } else {
+            self.selected = visible[0];
         }
     }
 
     fn prev(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
+        let visible = self.visible_field_indices();
+        if visible.is_empty() {
+            return;
+        }
+        if let Some(pos) = visible.iter().position(|idx| *idx == self.selected) {
+            if pos > 0 {
+                self.selected = visible[pos - 1];
+            }
+        } else {
+            self.selected = visible[0];
         }
     }
 
     fn selected_field_mut(&mut self) -> &mut Field {
+        self.ensure_selected_visible();
         &mut self.fields[self.selected]
     }
 
     fn selected_field(&self) -> &Field {
+        if self.selected < self.fields.len()
+            && self.is_field_visible(&self.fields[self.selected].key)
+        {
+            return &self.fields[self.selected];
+        }
+        if let Some(first_visible) = self.visible_field_indices().first().copied() {
+            return &self.fields[first_visible];
+        }
         &self.fields[self.selected]
     }
 
@@ -724,6 +770,75 @@ impl SetupApp {
 
     fn channel_enabled(&self, channel: &str) -> bool {
         self.enabled_channels().iter().any(|c| c == channel)
+    }
+
+    fn dynamic_field_channel(key: &str) -> Option<&'static str> {
+        for ch in DYNAMIC_CHANNELS {
+            for f in ch.fields {
+                if key == dynamic_field_key(ch.name, f.yaml_key) {
+                    return Some(ch.name);
+                }
+            }
+        }
+        None
+    }
+
+    fn is_field_visible(&self, key: &str) -> bool {
+        match key {
+            "TELEGRAM_BOT_TOKEN" | "BOT_USERNAME" => self.channel_enabled("telegram"),
+            "DISCORD_BOT_TOKEN" => self.channel_enabled("discord"),
+            _ => Self::dynamic_field_channel(key)
+                .map(|ch| self.channel_enabled(ch))
+                .unwrap_or(true),
+        }
+    }
+
+    fn visible_field_indices(&self) -> Vec<usize> {
+        self.fields
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, field)| {
+                if self.is_field_visible(&field.key) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn ensure_selected_visible(&mut self) {
+        let visible = self.visible_field_indices();
+        if visible.is_empty() {
+            return;
+        }
+        if self.selected >= self.fields.len() {
+            self.selected = visible[0];
+            return;
+        }
+        if self.is_field_visible(&self.fields[self.selected].key) {
+            return;
+        }
+        if let Some(next_idx) = visible.iter().copied().find(|idx| *idx > self.selected) {
+            self.selected = next_idx;
+            return;
+        }
+        if let Some(last) = visible.last().copied() {
+            self.selected = last;
+        }
+    }
+
+    fn selected_progress(&self) -> (usize, usize) {
+        let visible = self.visible_field_indices();
+        if visible.is_empty() {
+            return (1, 1);
+        }
+        let current = visible
+            .iter()
+            .position(|idx| *idx == self.selected)
+            .map(|v| v + 1)
+            .unwrap_or(1);
+        (current, visible.len())
     }
 
     fn is_field_required(&self, field: &Field) -> bool {
@@ -1103,12 +1218,13 @@ impl SetupApp {
                 }
             }
         }
+        self.ensure_selected_visible();
     }
 
     fn default_value_for_field(&self, key: &str) -> String {
         let provider = self.field_value("LLM_PROVIDER");
         match key {
-            "ENABLED_CHANNELS" => String::new(),
+            "ENABLED_CHANNELS" => "web".into(),
             "TELEGRAM_BOT_TOKEN" | "BOT_USERNAME" | "DISCORD_BOT_TOKEN" | "LLM_API_KEY" => {
                 String::new()
             }
@@ -1211,8 +1327,7 @@ impl SetupApp {
     }
 
     fn progress_bar(&self, width: usize) -> String {
-        let total = self.fields.len().max(1);
-        let done = self.selected + 1;
+        let (done, total) = self.selected_progress();
         let fill = (done * width) / total;
         let mut s = String::new();
         for i in 0..width {
@@ -1497,7 +1612,7 @@ fn save_config_yaml(
 
     let enabled_raw = get("ENABLED_CHANNELS");
     let valid_channel_names: Vec<&str> = {
-        let mut v = vec!["telegram", "discord"];
+        let mut v = vec!["web", "telegram", "discord"];
         for ch in DYNAMIC_CHANNELS {
             v.push(ch.name);
         }
@@ -1511,86 +1626,82 @@ fn save_config_yaml(
         }
     }
 
-    let has_tg =
-        !get("TELEGRAM_BOT_TOKEN").trim().is_empty() || !get("BOT_USERNAME").trim().is_empty();
-    let has_discord = !get("DISCORD_BOT_TOKEN").trim().is_empty();
-    // Check which dynamic channels have at least one non-empty field value
-    let dynamic_channel_present: Vec<(&DynamicChannelDef, bool)> = DYNAMIC_CHANNELS
+    let selected_channels = if channels.is_empty() {
+        vec!["web".to_string()]
+    } else {
+        channels.clone()
+    };
+    let channel_selected = |name: &str| selected_channels.iter().any(|c| c == name);
+    let telegram_token = get("TELEGRAM_BOT_TOKEN");
+    let telegram_username = get("BOT_USERNAME");
+    let discord_token = get("DISCORD_BOT_TOKEN");
+
+    let telegram_present =
+        !telegram_token.trim().is_empty() || !telegram_username.trim().is_empty();
+    let discord_present = !discord_token.trim().is_empty();
+    // Use presence keys so optional defaults (e.g. feishu.domain = "feishu")
+    // do not create disabled channel blocks unexpectedly.
+    let dynamic_channel_include: Vec<(&DynamicChannelDef, bool)> = DYNAMIC_CHANNELS
         .iter()
         .map(|ch| {
-            let present = ch.fields.iter().any(|f| {
-                let key = dynamic_field_key(ch.name, f.yaml_key);
+            let selected = channel_selected(ch.name);
+            let has_presence = ch.presence_keys.iter().any(|yaml_key| {
+                let key = dynamic_field_key(ch.name, yaml_key);
                 !get(&key).trim().is_empty()
             });
-            (ch, present)
+            (ch, selected || has_presence)
         })
         .collect();
 
     let mut yaml = String::new();
     yaml.push_str("# MicroClaw configuration\n\n");
-    yaml.push_str("# Enabled channels (telegram,discord,web)\n");
-    let channels_note = if channels.is_empty() {
-        let mut inferred = Vec::new();
-        if has_tg {
-            inferred.push("telegram");
-        }
-        if has_discord {
-            inferred.push("discord");
-        }
-        for (ch, present) in &dynamic_channel_present {
-            if *present {
-                inferred.push(ch.name);
-            }
-        }
-        if inferred.is_empty() {
-            "setup later".to_string()
-        } else {
-            format!("inferred: {}", inferred.join(","))
-        }
-    } else {
-        channels.join(",")
-    };
-    yaml.push_str(&format!("# channels: {}\n\n", channels_note));
+    yaml.push_str(
+        "# Channel settings (set `enabled: false` to keep credentials without activating the channel)\n",
+    );
+    yaml.push_str("# setup wizard default: web when no channels are selected\n");
+    yaml.push_str("channels:\n");
 
-    yaml.push_str("# Telegram bot token from @BotFather\n");
-    yaml.push_str(&format!(
-        "telegram_bot_token: \"{}\"\n",
-        get("TELEGRAM_BOT_TOKEN")
-    ));
-    yaml.push_str("# Bot username without @\n");
-    yaml.push_str(&format!("bot_username: \"{}\"\n\n", get("BOT_USERNAME")));
+    yaml.push_str("  web:\n");
+    yaml.push_str(&format!("    enabled: {}\n", channel_selected("web")));
 
-    yaml.push_str("# Discord bot token\n");
-    let discord_token = get("DISCORD_BOT_TOKEN");
-    if discord_token.trim().is_empty() {
-        yaml.push_str("discord_bot_token: null\n\n");
-    } else {
-        yaml.push_str(&format!("discord_bot_token: \"{}\"\n\n", discord_token));
+    if channel_selected("telegram") || telegram_present {
+        yaml.push_str("  telegram:\n");
+        yaml.push_str(&format!("    enabled: {}\n", channel_selected("telegram")));
+        if !telegram_token.trim().is_empty() {
+            yaml.push_str(&format!("    bot_token: \"{}\"\n", telegram_token));
+        }
+        if !telegram_username.trim().is_empty() {
+            yaml.push_str(&format!("    bot_username: \"{}\"\n", telegram_username));
+        }
+    }
+    if channel_selected("discord") || discord_present {
+        yaml.push_str("  discord:\n");
+        yaml.push_str(&format!("    enabled: {}\n", channel_selected("discord")));
+        if !discord_token.trim().is_empty() {
+            yaml.push_str(&format!("    bot_token: \"{}\"\n", discord_token));
+        }
     }
 
-    yaml.push_str("web_enabled: true\n\n");
-
-    // Channels section (dynamic channels: Slack, Feishu, etc.)
-    let any_dynamic = dynamic_channel_present.iter().any(|(_, present)| *present);
-    if any_dynamic {
-        yaml.push_str("channels:\n");
-        for (ch, present) in &dynamic_channel_present {
-            if !present {
+    for (ch, include) in &dynamic_channel_include {
+        if !include {
+            continue;
+        }
+        yaml.push_str(&format!("  {}:\n", ch.name));
+        yaml.push_str(&format!("    enabled: {}\n", channel_selected(ch.name)));
+        for f in ch.fields {
+            let key = dynamic_field_key(ch.name, f.yaml_key);
+            let val = get(&key);
+            if val.trim().is_empty() {
                 continue;
             }
-            yaml.push_str(&format!("  {}:\n", ch.name));
-            for f in ch.fields {
-                let key = dynamic_field_key(ch.name, f.yaml_key);
-                let val = get(&key);
-                // Skip optional fields that match the default value
-                if !f.required && val == f.default && !val.is_empty() {
-                    continue;
-                }
-                yaml.push_str(&format!("    {}: \"{}\"\n", f.yaml_key, val));
+            // Skip optional fields that match the default value.
+            if !f.required && val == f.default && !val.is_empty() {
+                continue;
             }
+            yaml.push_str(&format!("    {}: \"{}\"\n", f.yaml_key, val));
         }
-        yaml.push('\n');
     }
+    yaml.push('\n');
 
     yaml.push_str(
         "# LLM provider (anthropic, openai-codex, ollama, openai, openrouter, deepseek, google, etc.)\n",
@@ -1748,6 +1859,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
         ])
         .split(frame.area());
 
+    let (selected_visible, visible_total) = app.selected_progress();
     let header = Paragraph::new(vec![
         Line::from(Span::styled(
             "MicroClaw • Interactive Setup",
@@ -1759,8 +1871,8 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
             Span::styled(
                 format!(
                     "Field {}/{}  ·  Section: {}  ·  ",
-                    app.selected + 1,
-                    app.fields.len(),
+                    selected_visible,
+                    visible_total,
                     app.current_section()
                 ),
                 Style::default().fg(Color::DarkGray),
@@ -1778,7 +1890,9 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
 
     let mut lines = Vec::<Line>::new();
     let mut last_section = "";
-    for (i, f) in app.fields.iter().enumerate() {
+    let visible_indices = app.visible_field_indices();
+    for i in visible_indices {
+        let f = &app.fields[i];
         let section = SetupApp::section_for_key(&f.key);
         if section != last_section {
             if !lines.is_empty() {
@@ -2022,6 +2136,7 @@ fn run_wizard(mut terminal: DefaultTerminal) -> Result<bool, MicroClawError> {
     let mut app = SetupApp::new();
 
     loop {
+        app.ensure_selected_visible();
         terminal.draw(|f| draw_ui(f, &app))?;
         if event::poll(Duration::from_millis(250))? {
             let Event::Key(key) = event::read()? else {
@@ -2171,6 +2286,18 @@ mod tests {
     }
 
     #[test]
+    fn test_channel_options_include_web() {
+        let options = SetupApp::channel_options();
+        assert!(options.contains(&"web"));
+    }
+
+    #[test]
+    fn test_setup_defaults_enabled_channels_to_web() {
+        let app = SetupApp::new();
+        assert_eq!(app.default_value_for_field("ENABLED_CHANNELS"), "web");
+    }
+
+    #[test]
     fn test_save_config_yaml() {
         let yaml_path = std::env::temp_dir().join(format!(
             "microclaw_setup_test_{}.yaml",
@@ -2188,8 +2315,13 @@ mod tests {
         assert!(backup.is_none()); // No previous file to back up
 
         let s = fs::read_to_string(&yaml_path).unwrap();
-        assert!(s.contains("telegram_bot_token: \"new_tok\""));
-        assert!(s.contains("bot_username: \"new_bot\""));
+        assert!(s.contains("\nchannels:\n"));
+        assert!(s.contains("  telegram:\n"));
+        assert!(s.contains("    enabled: true\n"));
+        assert!(s.contains("    bot_token: \"new_tok\"\n"));
+        assert!(s.contains("    bot_username: \"new_bot\"\n"));
+        assert!(s.contains("  web:\n"));
+        assert!(s.contains("    enabled: true\n"));
         assert!(s.contains("llm_provider: \"anthropic\""));
         assert!(s.contains("api_key: \"key\""));
 
@@ -2214,7 +2346,172 @@ mod tests {
 
         save_config_yaml(&yaml_path, &values).unwrap();
         let s = fs::read_to_string(&yaml_path).unwrap();
-        assert!(s.contains("discord_bot_token: \"discord_token_123\""));
+        assert!(s.contains("\nchannels:\n"));
+        assert!(s.contains("  discord:\n"));
+        assert!(s.contains("    enabled: false\n"));
+        assert!(s.contains("    bot_token: \"discord_token_123\"\n"));
+        assert!(s.contains("  web:\n"));
+        assert!(s.contains("    enabled: true\n"));
+
+        let _ = fs::remove_file(&yaml_path);
+    }
+
+    #[test]
+    fn test_save_config_yaml_disables_web_when_not_selected() {
+        let yaml_path = std::env::temp_dir().join(format!(
+            "microclaw_setup_web_toggle_test_{}.yaml",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+
+        let mut values = HashMap::new();
+        values.insert("ENABLED_CHANNELS".into(), "discord".into());
+        values.insert("DISCORD_BOT_TOKEN".into(), "discord_token_123".into());
+        values.insert("LLM_PROVIDER".into(), "anthropic".into());
+        values.insert("LLM_API_KEY".into(), "key".into());
+
+        save_config_yaml(&yaml_path, &values).unwrap();
+        let s = fs::read_to_string(&yaml_path).unwrap();
+        assert!(s.contains("\nchannels:\n"));
+        assert!(s.contains("  discord:\n"));
+        assert!(s.contains("    enabled: true\n"));
+        assert!(s.contains("  web:\n"));
+        assert!(s.contains("    enabled: false\n"));
+
+        let _ = fs::remove_file(&yaml_path);
+    }
+
+    #[test]
+    fn test_save_config_yaml_keeps_telegram_disabled_with_credentials() {
+        let yaml_path = std::env::temp_dir().join(format!(
+            "microclaw_setup_telegram_disabled_test_{}.yaml",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+
+        let mut values = HashMap::new();
+        values.insert("ENABLED_CHANNELS".into(), "discord".into());
+        values.insert("TELEGRAM_BOT_TOKEN".into(), "tg_token_123".into());
+        values.insert("BOT_USERNAME".into(), "tg_bot".into());
+        values.insert("DISCORD_BOT_TOKEN".into(), "discord_token_123".into());
+        values.insert("LLM_PROVIDER".into(), "anthropic".into());
+        values.insert("LLM_API_KEY".into(), "key".into());
+
+        save_config_yaml(&yaml_path, &values).unwrap();
+        let s = fs::read_to_string(&yaml_path).unwrap();
+        assert!(s.contains("  telegram:\n"));
+        assert!(s.contains("    enabled: false\n"));
+        assert!(s.contains("    bot_token: \"tg_token_123\"\n"));
+        assert!(s.contains("    bot_username: \"tg_bot\"\n"));
+
+        let _ = fs::remove_file(&yaml_path);
+    }
+
+    #[test]
+    fn test_channel_dependent_fields_are_hidden_until_enabled() {
+        let mut app = SetupApp::new();
+        if let Some(field) = app.fields.iter_mut().find(|f| f.key == "ENABLED_CHANNELS") {
+            field.value.clear();
+        }
+        app.ensure_selected_visible();
+
+        let visible_keys: Vec<String> = app
+            .visible_field_indices()
+            .iter()
+            .map(|idx| app.fields[*idx].key.clone())
+            .collect();
+        let hidden_keys = vec![
+            "TELEGRAM_BOT_TOKEN".to_string(),
+            "BOT_USERNAME".to_string(),
+            "DISCORD_BOT_TOKEN".to_string(),
+            dynamic_field_key("feishu", "app_id"),
+            dynamic_field_key("feishu", "app_secret"),
+            dynamic_field_key("feishu", "domain"),
+        ];
+        for key in hidden_keys {
+            assert!(
+                !visible_keys.iter().any(|k| k == &key),
+                "{key} should be hidden when channel is not enabled"
+            );
+        }
+
+        if let Some(field) = app.fields.iter_mut().find(|f| f.key == "ENABLED_CHANNELS") {
+            field.value = "telegram,feishu".to_string();
+        }
+        app.ensure_selected_visible();
+        let visible_keys: Vec<String> = app
+            .visible_field_indices()
+            .iter()
+            .map(|idx| app.fields[*idx].key.clone())
+            .collect();
+        let shown_keys = vec![
+            "TELEGRAM_BOT_TOKEN".to_string(),
+            "BOT_USERNAME".to_string(),
+            dynamic_field_key("feishu", "app_id"),
+            dynamic_field_key("feishu", "app_secret"),
+            dynamic_field_key("feishu", "domain"),
+        ];
+        for key in shown_keys {
+            assert!(
+                visible_keys.iter().any(|k| k == &key),
+                "{key} should be visible when channel is enabled"
+            );
+        }
+    }
+
+    #[test]
+    fn test_save_config_yaml_keeps_dynamic_channel_disabled_when_not_selected() {
+        let yaml_path = std::env::temp_dir().join(format!(
+            "microclaw_setup_dynamic_skip_test_{}.yaml",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+
+        let mut values = HashMap::new();
+        values.insert("ENABLED_CHANNELS".into(), "".into());
+        values.insert(dynamic_field_key("feishu", "app_id"), "app_id_1".into());
+        values.insert(
+            dynamic_field_key("feishu", "app_secret"),
+            "app_secret_1".into(),
+        );
+        values.insert(dynamic_field_key("feishu", "domain"), "feishu".into());
+        values.insert("LLM_PROVIDER".into(), "anthropic".into());
+        values.insert("LLM_API_KEY".into(), "key".into());
+
+        save_config_yaml(&yaml_path, &values).unwrap();
+        let s = fs::read_to_string(&yaml_path).unwrap();
+        assert!(s.contains("\nchannels:\n"));
+        assert!(s.contains("  feishu:\n"));
+        assert!(s.contains("    enabled: false\n"));
+        assert!(s.contains("    app_id: \"app_id_1\""));
+        assert!(s.contains("    app_secret: \"app_secret_1\""));
+
+        let _ = fs::remove_file(&yaml_path);
+    }
+
+    #[test]
+    fn test_save_config_yaml_includes_dynamic_channel_when_selected() {
+        let yaml_path = std::env::temp_dir().join(format!(
+            "microclaw_setup_dynamic_include_test_{}.yaml",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+
+        let mut values = HashMap::new();
+        values.insert("ENABLED_CHANNELS".into(), "feishu".into());
+        values.insert(dynamic_field_key("feishu", "app_id"), "app_id_1".into());
+        values.insert(
+            dynamic_field_key("feishu", "app_secret"),
+            "app_secret_1".into(),
+        );
+        values.insert(dynamic_field_key("feishu", "domain"), "feishu".into());
+        values.insert("LLM_PROVIDER".into(), "anthropic".into());
+        values.insert("LLM_API_KEY".into(), "key".into());
+
+        save_config_yaml(&yaml_path, &values).unwrap();
+        let s = fs::read_to_string(&yaml_path).unwrap();
+        assert!(s.contains("\nchannels:\n"));
+        assert!(s.contains("  feishu:\n"));
+        assert!(s.contains("    enabled: true\n"));
+        assert!(s.contains("    app_id: \"app_id_1\""));
+        assert!(s.contains("    app_secret: \"app_secret_1\""));
+        assert!(!s.contains("    domain: \"feishu\""));
 
         let _ = fs::remove_file(&yaml_path);
     }

@@ -1,10 +1,6 @@
 # MicroClaw configuration
 # Copy this file to microclaw.config.yaml and fill in the required values.
 
-# Telegram bot token from @BotFather
-telegram_bot_token: ""
-# Bot username without @
-bot_username: ""
 
 # LLM provider (anthropic, openai-codex, ollama, openai, openrouter, deepseek, google, etc.)
 llm_provider: "anthropic"
@@ -62,9 +58,6 @@ timezone: "UTC"
 max_session_messages: 40
 compact_keep_recent: 20
 
-# Telegram group allowlist (empty = allow all groups)
-# allowed_groups: []
-
 # Control chats can operate across chats (send_message/schedule/memory global/export/todo).
 # Non-control chats are restricted to their own chat_id.
 # control_chat_ids: []
@@ -75,33 +68,38 @@ compact_keep_recent: 20
 # whatsapp_verify_token: ""
 # whatsapp_webhook_port: 8080
 
-# Discord (optional)
-# discord_bot_token: ""
-# discord_allowed_channels: []
-
-# Slack (optional, Socket Mode) — configure under `channels:`
-# channels:
-#   slack:
-#     bot_token: "xoxb-..."
-#     app_token: "xapp-..."
-#     allowed_channels: []
-
-# Feishu / Lark (optional) — configure under `channels:`
-# channels:
-#   feishu:
-#     app_id: "cli_xxx"
-#     app_secret: "xxx"
-#     connection_mode: "websocket"   # "websocket" (default) or "webhook"
-#     domain: "feishu"               # "feishu" (China), "lark" (international), or custom URL
-#     allowed_chats: []
-#     # Webhook-only settings:
-#     # webhook_path: "/feishu/events"
-#     # verification_token: ""
-#     # encrypt_key: ""
+channels:
+  web:
+    enabled: true
+  telegram:
+    enabled: false
+    bot_token: ""
+    bot_username: ""
+    # Telegram group allowlist (empty = allow all groups)
+    # allowed_groups: []
+  discord:
+    enabled: false
+    bot_token: ""
+    # allowed_channels: []
+  # slack:
+  #   enabled: false
+  #   bot_token: "xoxb-..."
+  #   app_token: "xapp-..."
+  #   allowed_channels: []
+  # feishu:
+  #   enabled: false
+  #   app_id: "cli_xxx"
+  #   app_secret: "xxx"
+  #   connection_mode: "websocket"   # "websocket" (default) or "webhook"
+  #   domain: "feishu"               # "feishu" (China), "lark" (international), or custom URL
+  #   allowed_chats: []
+  #   # Webhook-only settings:
+  #   # webhook_path: "/feishu/events"
+  #   # verification_token: ""
+  #   # encrypt_key: ""
 
 # Local web UI (optional)
-# Enable built-in local web chat + config panel
-web_enabled: true
+# Channel on/off is controlled by `channels.web.enabled`.
 # Bind address for local web UI
 web_host: "127.0.0.1"
 # Port for local web UI
@@ -119,6 +117,13 @@ web_rate_window_seconds: 10
 web_run_history_limit: 512
 # Idle cleanup TTL for web session quota/locks (seconds)
 web_session_idle_ttl_seconds: 300
+
+# Legacy flat channel fields (backward compatibility only; prefer `channels:` above):
+# telegram_bot_token: ""
+# bot_username: ""
+# discord_bot_token: null
+# discord_allowed_channels: []
+# web_enabled: true
 
 # Soul file: defines your bot's personality, voice, values, and behavior.
 # Supports markdown format. If not set, checks data_dir/SOUL.md then ./SOUL.md.
