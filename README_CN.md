@@ -38,6 +38,7 @@
 - [发布](#发布)
 - [配置](#配置)
 - [配置项](#配置项)
+- [Docker 沙箱](#docker-沙箱)
 - [平台行为](#平台行为)
 - [多聊天权限模型](#多聊天权限模型)
 - [使用示例](#使用示例)
@@ -521,6 +522,40 @@ microclaw gateway uninstall
 | `embedding_dim` | 否 | provider 默认 | sqlite-vec 索引使用的向量维度 |
 
 `*` 需要至少启用一个渠道：`telegram_bot_token`、`discord_bot_token`、`channels.slack`、`channels.feishu`，或 `web_enabled: true`。
+
+## Docker 沙箱
+
+用于让 `bash` 工具在 Docker 容器执行，而不是在宿主执行。
+
+快速配置：
+
+```yaml
+sandbox:
+  mode: "all"
+  backend: "auto"
+  image: "ubuntu:25.10"
+  container_prefix: "microclaw-sandbox"
+  no_network: true
+  require_runtime: false
+```
+
+测试步骤：
+
+```sh
+docker info
+docker run --rm ubuntu:25.10 echo ok
+microclaw start
+```
+
+然后让 agent 执行：
+- `cat /etc/os-release`
+- `pwd`
+
+说明：
+- `sandbox.mode: "off"`（默认）时，`bash` 在宿主执行。
+- `mode: "all"` 但 Docker 不可用时：
+  - `require_runtime: false`：降级宿主执行并告警。
+  - `require_runtime: true`：直接报错，不降级。
 
 ### 支持的 `llm_provider` 值
 

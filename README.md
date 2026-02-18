@@ -40,6 +40,7 @@ An agentic AI assistant for chat surfaces, inspired by [nanoclaw](https://github
 - [Release](#release)
 - [Setup](#setup)
 - [Configuration](#configuration)
+- [Docker Sandbox](#docker-sandbox)
 - [Platform behavior](#platform-behavior)
 - [Multi-chat permission model](#multi-chat-permission-model)
 - [Usage examples](#usage-examples)
@@ -618,6 +619,40 @@ All configuration is via `microclaw.config.yaml`:
 | `embedding_dim` | No | provider default | Embedding vector dimension for sqlite-vec index initialization |
 
 `*` At least one channel must be enabled: `telegram_bot_token`, `discord_bot_token`, `channels.slack`, `channels.feishu`, or `web_enabled: true`.
+
+## Docker Sandbox
+
+Use this when you want `bash` tool calls to run in Docker containers instead of the host.
+
+Quick config:
+
+```yaml
+sandbox:
+  mode: "all"
+  backend: "auto"
+  image: "ubuntu:25.10"
+  container_prefix: "microclaw-sandbox"
+  no_network: true
+  require_runtime: false
+```
+
+How to test:
+
+```sh
+docker info
+docker run --rm ubuntu:25.10 echo ok
+microclaw start
+```
+
+Then ask the agent to run:
+- `cat /etc/os-release`
+- `pwd`
+
+Notes:
+- `sandbox.mode: "off"` (default) means `bash` runs on host.
+- If `mode: "all"` and Docker is unavailable:
+  - `require_runtime: false` -> fallback to host with warning.
+  - `require_runtime: true` -> command fails fast.
 
 ### Supported `llm_provider` values
 
