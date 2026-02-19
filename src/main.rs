@@ -106,6 +106,40 @@ fn migrate_legacy_runtime_layout(data_root: &Path, runtime_dir: &Path) {
     }
 }
 
+fn migrate_legacy_skills_dir(legacy_dir: &Path, preferred_dir: &Path) {
+    if legacy_dir == preferred_dir || !legacy_dir.exists() {
+        return;
+    }
+    if std::fs::create_dir_all(preferred_dir).is_err() {
+        return;
+    }
+    let entries = match std::fs::read_dir(legacy_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = preferred_dir.join(entry.file_name());
+        if dst.exists() {
+            continue;
+        }
+        if let Err(e) = move_path(&src, &dst) {
+            tracing::warn!(
+                "Failed to migrate legacy skills '{}' -> '{}': {}",
+                src.display(),
+                dst.display(),
+                e
+            );
+        } else {
+            tracing::info!(
+                "Migrated legacy skill '{}' -> '{}'",
+                src.display(),
+                dst.display()
+            );
+        }
+    }
+}
+
 async fn reembed_memories() -> anyhow::Result<()> {
     let config = Config::load()?;
 
@@ -244,8 +278,10 @@ async fn main() -> anyhow::Result<()> {
     let data_root_dir = config.data_root_dir();
     let runtime_data_dir = config.runtime_data_dir();
     let skills_data_dir = config.skills_data_dir();
+    let legacy_skills_dir = data_root_dir.join("skills");
     migrate_legacy_runtime_layout(&data_root_dir, Path::new(&runtime_data_dir));
-    builtin_skills::ensure_builtin_skills(&data_root_dir)?;
+    migrate_legacy_skills_dir(&legacy_skills_dir, Path::new(&skills_data_dir));
+    builtin_skills::ensure_builtin_skills(Path::new(&skills_data_dir))?;
 
     if std::env::var("MICROCLAW_GATEWAY").is_ok() {
         logging::init_logging(&runtime_data_dir)?;

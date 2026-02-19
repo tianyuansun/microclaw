@@ -34,6 +34,8 @@ struct OtlpWorkerConfig {
     endpoint: String,
     headers: Vec<(String, String)>,
     service_name: String,
+    batch_size: usize,
+    batch_max_delay: Duration,
     retry_max_attempts: usize,
     retry_base_ms: u64,
     retry_max_ms: u64,
@@ -73,6 +75,18 @@ impl OtlpExporter {
             .and_then(|v| v.as_u64())
             .map(|n| n.clamp(1, 10) as usize)
             .unwrap_or(3);
+        let batch_size = map
+            .get(serde_yaml::Value::String("otlp_batch_size".to_string()))
+            .and_then(|v| v.as_u64())
+            .map(|n| n.clamp(1, 1024) as usize)
+            .unwrap_or(32);
+        let batch_max_delay = map
+            .get(serde_yaml::Value::String(
+                "otlp_batch_max_delay_ms".to_string(),
+            ))
+            .and_then(|v| v.as_u64())
+            .map(|n| Duration::from_millis(n.clamp(20, 30_000)))
+            .unwrap_or_else(|| Duration::from_millis(1000));
         let retry_base_ms = map
             .get(serde_yaml::Value::String("otlp_retry_base_ms".to_string()))
             .and_then(|v| v.as_u64())
@@ -106,6 +120,8 @@ impl OtlpExporter {
             endpoint,
             headers,
             service_name,
+            batch_size,
+            batch_max_delay,
             retry_max_attempts,
             retry_base_ms,
             retry_max_ms,
@@ -127,6 +143,20 @@ async fn run_worker(
     cfg: OtlpWorkerConfig,
 ) {
     while let Some(snapshot) = rx.recv().await {
+        let mut batch = Vec::with_capacity(cfg.batch_size);
+        batch.push(snapshot);
+        let window_start = tokio::time::Instant::now();
+        while batch.len() < cfg.batch_size {
+            let Some(remaining) = cfg.batch_max_delay.checked_sub(window_start.elapsed()) else {
+                break;
+            };
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Some(item)) => batch.push(item),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
         let mut attempt = 0usize;
         let mut backoff = cfg.retry_base_ms;
         loop {
@@ -136,7 +166,7 @@ async fn run_worker(
                 &cfg.endpoint,
                 &cfg.headers,
                 &cfg.service_name,
-                snapshot.clone(),
+                &batch,
             )
             .await;
             match result {
@@ -159,9 +189,9 @@ async fn send_once(
     endpoint: &str,
     headers: &[(String, String)],
     service_name: &str,
-    snapshot: OtlpMetricSnapshot,
+    batch: &[OtlpMetricSnapshot],
 ) -> Result<(), String> {
-    let payload = build_metrics_payload(service_name, snapshot).encode_to_vec();
+    let payload = build_metrics_payload(service_name, batch).encode_to_vec();
     let mut req = client
         .post(endpoint)
         .header("content-type", "application/x-protobuf")
@@ -176,8 +206,28 @@ async fn send_once(
     Ok(())
 }
 
-fn build_metrics_payload(service_name: &str, s: OtlpMetricSnapshot) -> ExportMetricsServiceRequest {
-    let ts = s.timestamp_unix_nano;
+fn build_metrics_payload(
+    service_name: &str,
+    snapshots: &[OtlpMetricSnapshot],
+) -> ExportMetricsServiceRequest {
+    let points = if snapshots.is_empty() {
+        vec![OtlpMetricSnapshot {
+            timestamp_unix_nano: 0,
+            http_requests: 0,
+            llm_completions: 0,
+            llm_input_tokens: 0,
+            llm_output_tokens: 0,
+            tool_executions: 0,
+            mcp_calls: 0,
+            active_sessions: 0,
+        }]
+    } else {
+        snapshots.to_vec()
+    };
+    let start_ts = points
+        .first()
+        .map(|p| p.timestamp_unix_nano)
+        .unwrap_or_default();
     let resource = Resource {
         attributes: vec![KeyValue {
             key: "service.name".to_string(),
@@ -188,37 +238,68 @@ fn build_metrics_payload(service_name: &str, s: OtlpMetricSnapshot) -> ExportMet
         dropped_attributes_count: 0,
     };
     let metrics = vec![
-        sum_metric("http_requests", "Total HTTP requests", s.http_requests, ts),
+        sum_metric(
+            "http_requests",
+            "Total HTTP requests",
+            points
+                .iter()
+                .map(|p| (p.timestamp_unix_nano, p.http_requests))
+                .collect(),
+            start_ts,
+        ),
         sum_metric(
             "llm_completions",
             "Total LLM completions",
-            s.llm_completions,
-            ts,
+            points
+                .iter()
+                .map(|p| (p.timestamp_unix_nano, p.llm_completions))
+                .collect(),
+            start_ts,
         ),
         sum_metric(
             "llm_input_tokens",
             "Total input tokens",
-            s.llm_input_tokens,
-            ts,
+            points
+                .iter()
+                .map(|p| (p.timestamp_unix_nano, p.llm_input_tokens))
+                .collect(),
+            start_ts,
         ),
         sum_metric(
             "llm_output_tokens",
             "Total output tokens",
-            s.llm_output_tokens,
-            ts,
+            points
+                .iter()
+                .map(|p| (p.timestamp_unix_nano, p.llm_output_tokens))
+                .collect(),
+            start_ts,
         ),
         sum_metric(
             "tool_executions",
             "Total tool executions",
-            s.tool_executions,
-            ts,
+            points
+                .iter()
+                .map(|p| (p.timestamp_unix_nano, p.tool_executions))
+                .collect(),
+            start_ts,
         ),
-        sum_metric("mcp_calls", "Total MCP calls", s.mcp_calls, ts),
+        sum_metric(
+            "mcp_calls",
+            "Total MCP calls",
+            points
+                .iter()
+                .map(|p| (p.timestamp_unix_nano, p.mcp_calls))
+                .collect(),
+            start_ts,
+        ),
         gauge_metric(
             "active_sessions",
             "Current active sessions",
-            s.active_sessions,
-            ts,
+            points
+                .iter()
+                .map(|p| (p.timestamp_unix_nano, p.active_sessions))
+                .collect(),
+            start_ts,
         ),
     ];
     ExportMetricsServiceRequest {
@@ -239,42 +320,48 @@ fn build_metrics_payload(service_name: &str, s: OtlpMetricSnapshot) -> ExportMet
     }
 }
 
-fn sum_metric(name: &str, desc: &str, value: i64, ts: u64) -> Metric {
+fn sum_metric(name: &str, desc: &str, values: Vec<(u64, i64)>, start_ts: u64) -> Metric {
     Metric {
         name: format!("microclaw_{}", name),
         description: desc.to_string(),
         unit: "1".to_string(),
         metadata: Vec::new(),
         data: Some(metric::Data::Sum(Sum {
-            data_points: vec![NumberDataPoint {
-                attributes: Vec::new(),
-                start_time_unix_nano: ts,
-                time_unix_nano: ts,
-                exemplars: Vec::new(),
-                flags: 0,
-                value: Some(number_data_point::Value::AsInt(value.max(0))),
-            }],
+            data_points: values
+                .into_iter()
+                .map(|(ts, value)| NumberDataPoint {
+                    attributes: Vec::new(),
+                    start_time_unix_nano: start_ts,
+                    time_unix_nano: ts,
+                    exemplars: Vec::new(),
+                    flags: 0,
+                    value: Some(number_data_point::Value::AsInt(value.max(0))),
+                })
+                .collect(),
             aggregation_temporality: AggregationTemporality::Cumulative as i32,
             is_monotonic: true,
         })),
     }
 }
 
-fn gauge_metric(name: &str, desc: &str, value: i64, ts: u64) -> Metric {
+fn gauge_metric(name: &str, desc: &str, values: Vec<(u64, i64)>, start_ts: u64) -> Metric {
     Metric {
         name: format!("microclaw_{}", name),
         description: desc.to_string(),
         unit: "1".to_string(),
         metadata: Vec::new(),
         data: Some(metric::Data::Gauge(Gauge {
-            data_points: vec![NumberDataPoint {
-                attributes: Vec::new(),
-                start_time_unix_nano: ts,
-                time_unix_nano: ts,
-                exemplars: Vec::new(),
-                flags: 0,
-                value: Some(number_data_point::Value::AsInt(value.max(0))),
-            }],
+            data_points: values
+                .into_iter()
+                .map(|(ts, value)| NumberDataPoint {
+                    attributes: Vec::new(),
+                    start_time_unix_nano: start_ts,
+                    time_unix_nano: ts,
+                    exemplars: Vec::new(),
+                    flags: 0,
+                    value: Some(number_data_point::Value::AsInt(value.max(0))),
+                })
+                .collect(),
         })),
     }
 }
@@ -287,7 +374,7 @@ mod tests {
     fn test_build_otlp_payload() {
         let payload = build_metrics_payload(
             "microclaw-test",
-            OtlpMetricSnapshot {
+            &[OtlpMetricSnapshot {
                 timestamp_unix_nano: 1_700_000_000_000_000_000,
                 http_requests: 10,
                 llm_completions: 5,
@@ -296,7 +383,7 @@ mod tests {
                 tool_executions: 3,
                 mcp_calls: 1,
                 active_sessions: 2,
-            },
+            }],
         );
         assert_eq!(payload.resource_metrics.len(), 1);
         let metrics = &payload.resource_metrics[0].scope_metrics[0].metrics;

@@ -1122,7 +1122,7 @@ You have access to the following capabilities:
 - Understand images sent by users (they appear as image content blocks)
 - Delegate self-contained sub-tasks to a parallel agent (sub_agent)
 - Activate agent skills (activate_skill) for specialized tasks
-- Install skills from repos (sync_skills) — ALWAYS use this instead of manually writing SKILL.md files. Skills MUST go in microclaw.data/skills/, NOT runtime/skills/ or anywhere else.
+- Install skills from repos (sync_skills) — ALWAYS use this instead of manually writing SKILL.md files. Skills MUST go in ~/.microclaw/skills/ (or configured skills dir), NOT runtime/skills/ or anywhere else.
 - Plan and track tasks with a todo list (todo_read, todo_write) — use this to break down complex tasks into steps, track progress, and stay organized
 
 The current chat_id is {chat_id}. Use this when calling send_message, schedule, export_chat, memory(chat scope), or todo tools.

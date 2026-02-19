@@ -45,10 +45,23 @@ fn default_memory_token_budget() -> usize {
     1500
 }
 fn default_data_dir() -> String {
-    "./microclaw.data".into()
+    default_data_root().to_string_lossy().to_string()
+}
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+fn default_data_root() -> PathBuf {
+    home_dir()
+        .map(|h| h.join(".microclaw"))
+        .unwrap_or_else(|| PathBuf::from(".microclaw"))
 }
 fn default_working_dir() -> String {
-    "./tmp".into()
+    default_data_root()
+        .join("working_dir")
+        .to_string_lossy()
+        .to_string()
 }
 fn default_working_dir_isolation() -> WorkingDirIsolation {
     WorkingDirIsolation::Chat
@@ -186,6 +199,8 @@ pub struct Config {
     // --- Paths & environment ---
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
+    #[serde(default)]
+    pub skills_dir: Option<String>,
     #[serde(default = "default_working_dir")]
     pub working_dir: String,
     #[serde(default = "default_working_dir_isolation")]
@@ -289,8 +304,9 @@ impl Config {
             max_history_messages: 50,
             max_document_size_mb: 100,
             memory_token_budget: 1500,
-            data_dir: "./microclaw.data".into(),
-            working_dir: "./tmp".into(),
+            data_dir: default_data_dir(),
+            skills_dir: None,
+            working_dir: default_working_dir(),
             working_dir_isolation: WorkingDirIsolation::Chat,
             sandbox: SandboxConfig::default(),
             openai_api_key: None,
@@ -339,17 +355,23 @@ impl Config {
             .to_string()
     }
 
-    /// Skills directory under data root.
-    /// Handles the case where data_dir was overridden to the runtime subdirectory
-    /// (e.g. `microclaw.data/runtime`) — skills always live under the true root.
+    /// Skills directory. Uses `skills_dir` when configured,
+    /// otherwise defaults to `<data_dir>/skills`.
     pub fn skills_data_dir(&self) -> String {
-        let root = self.data_root_dir();
-        let base = if root.ends_with("runtime") {
-            root.parent().unwrap_or(&root).to_path_buf()
-        } else {
-            root
-        };
-        base.join("skills").to_string_lossy().to_string()
+        if let Some(configured) = &self.skills_dir {
+            let trimmed = configured.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        self.data_root_dir()
+            .join("skills")
+            .to_string_lossy()
+            .to_string()
+    }
+
+    pub fn clawhub_lockfile_path(&self) -> PathBuf {
+        self.data_root_dir().join("clawhub.lock.json")
     }
 
     pub fn resolve_config_path() -> Result<Option<PathBuf>, MicroClawError> {
@@ -448,6 +470,14 @@ impl Config {
             if url.trim().is_empty() {
                 self.llm_base_url = None;
             }
+        }
+        if let Some(dir) = &self.skills_dir {
+            let trimmed = dir.trim().to_string();
+            self.skills_dir = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
         }
         if self.working_dir.trim().is_empty() {
             self.working_dir = default_working_dir();
@@ -729,8 +759,9 @@ mod tests {
         config.allowed_groups = vec![123, 456];
         config.control_chat_ids = vec![999];
         assert_eq!(config.model, "claude-sonnet-4-5-20250929");
-        assert_eq!(config.data_dir, "./microclaw.data");
-        assert_eq!(config.working_dir, "./tmp");
+        assert!(config.data_dir.ends_with(".microclaw"));
+        assert!(std::path::PathBuf::from(&config.working_dir)
+            .ends_with(std::path::Path::new(".microclaw").join("working_dir")));
         assert_eq!(config.openai_api_key.as_deref(), Some("sk-test"));
         assert_eq!(config.timezone, "US/Eastern");
         assert_eq!(config.allowed_groups, vec![123, 456]);
@@ -754,8 +785,9 @@ mod tests {
         assert_eq!(config.llm_provider, "anthropic");
         assert_eq!(config.max_tokens, 8192);
         assert_eq!(config.max_tool_iterations, 100);
-        assert_eq!(config.data_dir, "./microclaw.data");
-        assert_eq!(config.working_dir, "./tmp");
+        assert!(config.data_dir.ends_with(".microclaw"));
+        assert!(std::path::PathBuf::from(&config.working_dir)
+            .ends_with(std::path::Path::new(".microclaw").join("working_dir")));
         assert_eq!(config.memory_token_budget, 1500);
         assert!(matches!(
             config.working_dir_isolation,
@@ -764,6 +796,13 @@ mod tests {
         assert!(matches!(config.sandbox.mode, SandboxMode::Off));
         assert_eq!(config.max_document_size_mb, 100);
         assert_eq!(config.timezone, "UTC");
+    }
+
+    #[test]
+    fn test_default_data_dir_uses_microclaw_home() {
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.data_dir.ends_with(".microclaw"));
     }
 
     #[test]
@@ -780,7 +819,8 @@ mod tests {
         let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nworking_dir: '  '\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
-        assert_eq!(config.working_dir, "./tmp");
+        assert!(std::path::PathBuf::from(&config.working_dir)
+            .ends_with(std::path::Path::new(".microclaw").join("working_dir")));
     }
 
     #[test]
@@ -847,6 +887,18 @@ mod tests {
                 .join("runtime")
                 .join("runtime")
         ));
+        assert!(skills.ends_with(
+            std::path::Path::new("microclaw.data")
+                .join("runtime")
+                .join("skills")
+        ));
+    }
+
+    #[test]
+    fn test_skills_dir_uses_config_override() {
+        let mut config = test_config();
+        config.skills_dir = Some("./microclaw.data/skills".to_string());
+        let skills = std::path::PathBuf::from(config.skills_data_dir());
         assert!(skills.ends_with(std::path::Path::new("microclaw.data").join("skills")));
     }
 
