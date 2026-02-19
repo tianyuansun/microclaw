@@ -69,18 +69,15 @@ impl Tool for WriteFileTool {
             return ToolResult::error(msg);
         }
 
-        // Guard: SKILL.md files must go in the correct skills directory, not runtime/skills/ or elsewhere.
+        // Guard: SKILL.md files must go in the dedicated skills directory, not runtime/skills/.
         if resolved_path.file_name().and_then(|f| f.to_str()) == Some("SKILL.md") {
-            let skills_marker = std::path::Path::new("microclaw.data").join("skills");
-            let runtime_skills = std::path::Path::new("microclaw.data")
-                .join("runtime")
-                .join("skills");
             let path_str = resolved_path.to_string_lossy();
-            let in_correct_dir = path_str.contains(&skills_marker.to_string_lossy().to_string());
-            let in_runtime_dir = path_str.contains(&runtime_skills.to_string_lossy().to_string());
+            let normalized = path_str.replace('\\', "/");
+            let in_correct_dir = normalized.contains("/skills/");
+            let in_runtime_dir = normalized.contains("/runtime/skills/");
             if in_runtime_dir || !in_correct_dir {
                 return ToolResult::error(format!(
-                    "Wrong directory for skills! SKILL.md files MUST be written to microclaw.data/skills/<skill-name>/SKILL.md — \
+                    "Wrong directory for skills! SKILL.md files MUST be written to ~/.microclaw/skills/<skill-name>/SKILL.md (or configured skills dir) — \
                     NOT runtime/skills/ or any other location. Use the `sync_skills` tool instead, which handles this automatically. \
                     Attempted path: {}",
                     resolved_path.display()

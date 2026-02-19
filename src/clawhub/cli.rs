@@ -49,7 +49,7 @@ pub fn handle_skill_cli(args: &[String], config: &Config) -> Result<(), MicroCla
                 return Ok(());
             }
             let skills_dir = PathBuf::from(config.skills_data_dir());
-            let lockfile_path = config.data_root_dir().join("clawhub.lock.json");
+            let lockfile_path = config.clawhub_lockfile_path();
 
             let gateway = gateway.clone();
             rt.block_on(async {
@@ -74,7 +74,7 @@ pub fn handle_skill_cli(args: &[String], config: &Config) -> Result<(), MicroCla
             })
         }
         "list" => {
-            let lockfile_path = config.data_root_dir().join("clawhub.lock.json");
+            let lockfile_path = config.clawhub_lockfile_path();
             let lock = gateway.read_lockfile(&lockfile_path)?;
             if lock.skills.is_empty() {
                 println!("No ClawHub skills installed.");

@@ -106,7 +106,7 @@ impl ClawHubInstallTool {
         let gateway: Arc<dyn ClawHubGateway> =
             Arc::new(RegistryClawHubGateway::from_config(config));
         let skills_dir = PathBuf::from(config.skills_data_dir());
-        let lockfile_path = config.data_root_dir().join("clawhub.lock.json");
+        let lockfile_path = config.clawhub_lockfile_path();
         Self {
             gateway,
             skills_dir,
@@ -125,8 +125,9 @@ impl Tool for ClawHubInstallTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "clawhub_install".to_string(),
-            description: "Download and install a skill from ClawHub into microclaw.data/skills/."
-                .to_string(),
+            description:
+                "Download and install a skill from ClawHub into ~/.microclaw/skills/ (or configured skills dir)."
+                    .to_string(),
             input_schema: schema_object(
                 serde_json::json!({
                     "slug": {

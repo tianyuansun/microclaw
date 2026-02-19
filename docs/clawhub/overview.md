@@ -1,0 +1,34 @@
+# ClawHub Integration
+
+## What it adds
+
+MicroClaw integrates with ClawHub to search and install skill packs.
+
+- CLI: `microclaw skill search|install|list|inspect`
+- Agent tools: `clawhub_search`, `clawhub_install`
+- Lockfile: `clawhub.lock.json` (managed install state)
+
+## Storage locations
+
+- Skills directory: `~/.microclaw/skills` (or `$MICROCLAW_HOME/skills`)
+- Lockfile: `~/.microclaw/clawhub.lock.json` (or `$MICROCLAW_HOME/clawhub.lock.json`)
+
+Compatibility behavior:
+- If legacy `<data_dir>/skills` already exists, runtime keeps using it until migrated.
+
+## Config
+
+In `microclaw.config.yaml`:
+
+```yaml
+clawhub_registry: "https://clawhub.ai"
+clawhub_token: ""
+clawhub_agent_tools_enabled: true
+clawhub_skip_security_warnings: false
+```
+
+## Operational notes
+
+- Keep `clawhub_skip_security_warnings: false` in production.
+- Review `clawhub.lock.json` in CI for supply-chain traceability.
+- Pin versions in automation instead of implicit latest.

@@ -12,6 +12,7 @@ Core capabilities:
 - File memory (`AGENTS.md`) + structured SQLite memory
 - Memory reflector, quality gate, and observability metrics
 - Skills + MCP tool federation
+- ClawHub skill registry integration (search/install/lockfile)
 
 ## Tech stack
 
@@ -69,6 +70,12 @@ Regenerate docs artifacts with:
 ```sh
 node scripts/generate_docs_artifacts.mjs
 ```
+
+## Skills Storage
+
+- Preferred skills dir: `~/.microclaw/skills` (or `$MICROCLAW_HOME/skills`)
+- Compatibility fallback: legacy `<data_root>/skills` if it already exists
+- ClawHub lockfile: `~/.microclaw/clawhub.lock.json`
 
 ## Agent loop (high level)
 
@@ -137,6 +144,11 @@ Hook assets and spec:
 Hook runtime supports:
 - events: `BeforeLLMCall`, `BeforeToolCall`, `AfterToolCall`
 - outcomes: `allow`, `block`, `modify` (structured fields only)
+
+## ClawHub
+
+- local doc: `docs/clawhub/overview.md`
+- web doc: `website/docs/clawhub.md`
 
 ## Observability Docs
 

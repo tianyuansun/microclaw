@@ -146,7 +146,7 @@ fn test_data_dir_paths() {
     let skills = std::path::PathBuf::from(config.skills_data_dir());
 
     assert!(runtime.ends_with(std::path::Path::new("microclaw.data").join("runtime")));
-    assert!(skills.ends_with(std::path::Path::new("microclaw.data").join("skills")));
+    assert!(skills.ends_with(std::path::Path::new(".microclaw").join("skills")));
 }
 
 #[test]
