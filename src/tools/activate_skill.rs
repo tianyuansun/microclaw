@@ -71,7 +71,10 @@ impl Tool for ActivateSkillTool {
                 result.push_str(&body);
                 ToolResult::success(result)
             }
-            Err(e) => ToolResult::error(e),
+            Err(e) => ToolResult::error(format!(
+                "{}\nHint: Run `/skills` to list available skills, or `microclaw skill available --all` for unavailable-skill diagnostics.",
+                e
+            )),
         }
     }
 }

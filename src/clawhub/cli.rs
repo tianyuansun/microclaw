@@ -1,6 +1,7 @@
 use crate::clawhub::service::{ClawHubGateway, RegistryClawHubGateway};
 use crate::config::Config;
 use crate::error::MicroClawError;
+use crate::skills::SkillManager;
 use microclaw_clawhub::install::InstallOptions;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,6 +90,16 @@ pub fn handle_skill_cli(args: &[String], config: &Config) -> Result<(), MicroCla
             }
             Ok(())
         }
+        "available" => {
+            let manager = SkillManager::from_skills_dir(&config.skills_data_dir());
+            let include_unavailable = args.iter().any(|a| a == "--all");
+            if include_unavailable {
+                println!("{}", manager.list_skills_formatted_all());
+            } else {
+                println!("{}", manager.list_skills_formatted());
+            }
+            Ok(())
+        }
         "inspect" => {
             let empty_slug = "".to_string();
             let slug = args.get(1).map(|s| s.as_str()).unwrap_or(&empty_slug);
@@ -122,6 +133,7 @@ pub fn handle_skill_cli(args: &[String], config: &Config) -> Result<(), MicroCla
             println!("  search <query>   Search for skills");
             println!("  install <slug>    Install a skill");
             println!("  list              List installed skills");
+            println!("  available [--all] List local skills (with diagnostics when --all)");
             println!("  inspect <slug>    Show skill details");
             Ok(())
         }
