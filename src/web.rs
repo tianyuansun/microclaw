@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -14,7 +12,6 @@ use axum::{Json, Router};
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info};
 
@@ -35,8 +32,10 @@ use microclaw_storage::usage::build_usage_report;
 mod auth;
 mod config;
 mod metrics;
+mod middleware;
 mod sessions;
 mod stream;
+use middleware::*;
 
 static WEB_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
@@ -75,43 +74,13 @@ struct WebState {
     auth_hub: AuthHub,
     metrics: Arc<Mutex<WebMetrics>>,
     otlp: Option<Arc<OtlpExporter>>,
-    otlp_last_export: Arc<Mutex<Option<Instant>>>,
-    otlp_export_interval: Duration,
     limits: WebLimits,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-enum AuthScope {
-    Read,
-    Write,
-    Admin,
-    Approvals,
-}
-
-#[derive(Clone, Debug)]
-struct AuthIdentity {
-    scopes: Vec<String>,
-    actor: String,
-}
-
-impl AuthIdentity {
-    fn allows(&self, required: AuthScope) -> bool {
-        let want = match required {
-            AuthScope::Read => "operator.read",
-            AuthScope::Write => "operator.write",
-            AuthScope::Admin => "operator.admin",
-            AuthScope::Approvals => "operator.approvals",
-        };
-        self.scopes
-            .iter()
-            .any(|s| s == "operator.admin" || s == want)
-    }
 }
 
 #[derive(Clone, Default)]
 struct AuthHub {
-    buckets: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    login_buckets: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    api_key_buckets: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -386,7 +355,7 @@ impl AuthHub {
         window: Duration,
     ) -> bool {
         let now = Instant::now();
-        let mut guard = self.buckets.lock().await;
+        let mut guard = self.login_buckets.lock().await;
         let bucket = guard.entry(client_key.to_string()).or_default();
         while let Some(ts) = bucket.front() {
             if now.duration_since(*ts) > window {
@@ -396,6 +365,29 @@ impl AuthHub {
             }
         }
         if bucket.len() >= max_attempts {
+            return false;
+        }
+        bucket.push_back(now);
+        true
+    }
+
+    async fn allow_api_key_request(
+        &self,
+        api_key_actor: &str,
+        max_requests: usize,
+        window: Duration,
+    ) -> bool {
+        let now = Instant::now();
+        let mut guard = self.api_key_buckets.lock().await;
+        let bucket = guard.entry(api_key_actor.to_string()).or_default();
+        while let Some(ts) = bucket.front() {
+            if now.duration_since(*ts) > window {
+                let _ = bucket.pop_front();
+            } else {
+                break;
+            }
+        }
+        if bucket.len() >= max_requests {
             return false;
         }
         bucket.push_back(now);
@@ -442,55 +434,37 @@ async fn persist_metrics_snapshot(state: &WebState) -> Result<(), (StatusCode, S
     .await;
 
     if let Some(exporter) = state.otlp.clone() {
-        let should_export = {
-            let mut last = state.otlp_last_export.lock().await;
-            let now_i = Instant::now();
-            let due = last
-                .as_ref()
-                .map(|t| now_i.duration_since(*t) >= state.otlp_export_interval)
-                .unwrap_or(true);
-            if due {
-                *last = Some(now_i);
-            }
-            due
+        let metric_snapshot = OtlpMetricSnapshot {
+            timestamp_unix_nano: now.timestamp_nanos_opt().unwrap_or(0) as u64,
+            http_requests: snapshot.http_requests,
+            llm_completions: snapshot.llm_completions,
+            llm_input_tokens: snapshot.llm_input_tokens,
+            llm_output_tokens: snapshot.llm_output_tokens,
+            tool_executions: snapshot.tool_executions,
+            mcp_calls: snapshot.mcp_calls,
+            active_sessions,
         };
-        if should_export {
-            let metric_snapshot = OtlpMetricSnapshot {
-                timestamp_unix_nano: now.timestamp_nanos_opt().unwrap_or(0) as u64,
-                http_requests: snapshot.http_requests,
-                llm_completions: snapshot.llm_completions,
-                llm_input_tokens: snapshot.llm_input_tokens,
-                llm_output_tokens: snapshot.llm_output_tokens,
-                tool_executions: snapshot.tool_executions,
-                mcp_calls: snapshot.mcp_calls,
-                active_sessions,
-            };
-            tokio::spawn(async move {
-                if let Err(e) = exporter.enqueue_metrics(metric_snapshot) {
-                    tracing::warn!("otlp export failed: {}", e);
-                }
-            });
-        }
+        tokio::spawn(async move {
+            if let Err(e) = exporter.enqueue_metrics(metric_snapshot) {
+                tracing::warn!("otlp export failed: {}", e);
+            }
+        });
     }
     Ok(())
 }
 
-fn otlp_export_interval(config: &Config) -> Duration {
-    if let Some(map) = config
-        .channels
-        .get("observability")
-        .and_then(|v| v.as_mapping())
-    {
+fn metrics_flush_interval(config: &Config) -> Duration {
+    if let Some(map) = config.channels.get("web").and_then(|v| v.as_mapping()) {
         if let Some(n) = map
             .get(serde_yaml::Value::String(
-                "otlp_export_interval_seconds".to_string(),
+                "metrics_flush_interval_seconds".to_string(),
             ))
             .and_then(|v| v.as_u64())
         {
-            return Duration::from_secs(n.clamp(1, 3600));
+            return Duration::from_secs(n.clamp(1, 300));
         }
     }
-    Duration::from_secs(15)
+    Duration::from_secs(10)
 }
 
 fn metrics_history_retention_days(config: &Config) -> i64 {
@@ -534,200 +508,6 @@ async fn audit_log(
         .map(|_| ())
     })
     .await;
-}
-
-fn auth_token_from_headers(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|raw| raw.strip_prefix("Bearer "))
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
-
-fn sha256_hex(input: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(input.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let raw = headers.get("cookie")?.to_str().ok()?;
-    for part in raw.split(';') {
-        let mut kv = part.trim().splitn(2, '=');
-        let k = kv.next()?.trim();
-        let v = kv.next().unwrap_or("").trim();
-        if k == name && !v.is_empty() {
-            return Some(v.to_string());
-        }
-    }
-    None
-}
-
-fn session_cookie_header(session_id: &str, expires_at: &str) -> String {
-    let mut header =
-        format!("mc_session={session_id}; Path=/; HttpOnly; SameSite=Strict; Expires={expires_at}");
-    header.push_str("; Secure");
-    header
-}
-
-fn csrf_cookie_header(csrf_token: &str, expires_at: &str) -> String {
-    let mut header = format!("mc_csrf={csrf_token}; Path=/; SameSite=Strict; Expires={expires_at}");
-    header.push_str("; Secure");
-    header
-}
-
-fn clear_session_cookie_header() -> String {
-    "mc_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0".to_string()
-}
-
-fn clear_csrf_cookie_header() -> String {
-    "mc_csrf=; Path=/; SameSite=Strict; Max-Age=0".to_string()
-}
-
-fn make_password_hash(password: &str) -> String {
-    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
-        .unwrap_or_else(|_| SaltString::from_b64("AAAAAAAAAAAAAAAAAAAAAA").unwrap());
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .unwrap_or_default()
-}
-
-fn verify_password_hash(stored: &str, password: &str) -> bool {
-    if let Ok(parsed) = PasswordHash::new(stored) {
-        return Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok();
-    }
-    let mut parts = stored.split('$');
-    let Some(ver) = parts.next() else {
-        return false;
-    };
-    if ver != "v1" {
-        return false;
-    }
-    let Some(salt) = parts.next() else {
-        return false;
-    };
-    let Some(hash) = parts.next() else {
-        return false;
-    };
-    sha256_hex(&format!("{salt}:{password}")) == hash
-}
-
-fn client_key_from_headers(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "global".to_string())
-}
-
-async fn require_scope(
-    state: &WebState,
-    headers: &HeaderMap,
-    required: AuthScope,
-) -> Result<AuthIdentity, (StatusCode, String)> {
-    let needs_csrf = matches!(
-        required,
-        AuthScope::Write | AuthScope::Admin | AuthScope::Approvals
-    );
-    let has_password = call_blocking(state.app_state.db.clone(), |db| db.get_auth_password_hash())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .is_some();
-    if state.legacy_auth_token.is_none() && !has_password {
-        let id = AuthIdentity {
-            scopes: vec![
-                "operator.read".to_string(),
-                "operator.write".to_string(),
-                "operator.admin".to_string(),
-                "operator.approvals".to_string(),
-            ],
-            actor: "bootstrap".to_string(),
-        };
-        if id.allows(required) {
-            return Ok(id);
-        }
-        return Err((StatusCode::FORBIDDEN, "forbidden".into()));
-    }
-
-    if let Some(provided) = auth_token_from_headers(headers) {
-        if let Some(expected) = state.legacy_auth_token.as_deref() {
-            if provided == expected {
-                let id = AuthIdentity {
-                    scopes: vec![
-                        "operator.read".to_string(),
-                        "operator.write".to_string(),
-                        "operator.admin".to_string(),
-                        "operator.approvals".to_string(),
-                    ],
-                    actor: "legacy-token".to_string(),
-                };
-                if id.allows(required) {
-                    return Ok(id);
-                }
-            }
-        }
-
-        let key_hash = sha256_hex(&provided);
-        if let Some((key_id, scopes)) = call_blocking(state.app_state.db.clone(), move |db| {
-            db.validate_api_key_hash(&key_hash)
-        })
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        {
-            let id = AuthIdentity {
-                scopes,
-                actor: format!("api-key:{key_id}"),
-            };
-            if id.allows(required) {
-                return Ok(id);
-            }
-            return Err((StatusCode::FORBIDDEN, "forbidden".into()));
-        }
-    }
-
-    if let Some(session_id) = parse_cookie(headers, "mc_session") {
-        let session_id_for_validate = session_id.clone();
-        let valid = call_blocking(state.app_state.db.clone(), move |db| {
-            db.validate_auth_session(&session_id_for_validate)
-        })
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        if valid {
-            if needs_csrf {
-                let cookie_csrf = parse_cookie(headers, "mc_csrf");
-                let header_csrf = headers
-                    .get("x-csrf-token")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                if cookie_csrf.is_none() || header_csrf.is_none() || cookie_csrf != header_csrf {
-                    return Err((
-                        StatusCode::FORBIDDEN,
-                        "missing or invalid csrf token".into(),
-                    ));
-                }
-            }
-            let id = AuthIdentity {
-                scopes: vec![
-                    "operator.read".to_string(),
-                    "operator.write".to_string(),
-                    "operator.admin".to_string(),
-                    "operator.approvals".to_string(),
-                ],
-                actor: format!("session:{session_id}"),
-            };
-            if id.allows(required) {
-                return Ok(id);
-            }
-            return Err((StatusCode::FORBIDDEN, "forbidden".into()));
-        }
-    }
-
-    Err((StatusCode::UNAUTHORIZED, "unauthorized".into()))
 }
 
 fn normalize_session_key(session_key: Option<&str>) -> String {
@@ -1234,7 +1014,6 @@ async fn api_send(
     if result.is_ok() {
         metrics_llm_completion_inc(&state).await;
     }
-    let _ = persist_metrics_snapshot(&state).await;
     state
         .request_hub
         .end_with_limits(&session_key, &state.limits)
@@ -1428,6 +1207,7 @@ async fn api_audit_logs(
 
 pub async fn start_web_server(state: Arc<AppState>) {
     let limits = WebLimits::from_config(&state.config);
+    let flush_interval = metrics_flush_interval(&state.config);
     let web_state = WebState {
         legacy_auth_token: state.config.web_auth_token.clone(),
         app_state: state.clone(),
@@ -1437,10 +1217,23 @@ pub async fn start_web_server(state: Arc<AppState>) {
         auth_hub: AuthHub::default(),
         metrics: Arc::new(Mutex::new(WebMetrics::default())),
         otlp: OtlpExporter::from_config(&state.config),
-        otlp_last_export: Arc::new(Mutex::new(None)),
-        otlp_export_interval: otlp_export_interval(&state.config),
         limits,
     };
+
+    let flush_state = web_state.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(flush_interval);
+        loop {
+            ticker.tick().await;
+            if let Err((status, err)) = persist_metrics_snapshot(&flush_state).await {
+                tracing::warn!(
+                    "metrics flush failed status={} error={}",
+                    status.as_u16(),
+                    err
+                );
+            }
+        }
+    });
 
     let router = build_router(web_state);
 
@@ -1723,8 +1516,6 @@ mod tests {
             auth_hub: AuthHub::default(),
             metrics: Arc::new(Mutex::new(WebMetrics::default())),
             otlp: None,
-            otlp_last_export: Arc::new(Mutex::new(None)),
-            otlp_export_interval: Duration::from_secs(1),
             limits,
         }
     }

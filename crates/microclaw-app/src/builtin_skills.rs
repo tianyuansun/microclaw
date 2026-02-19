@@ -1,13 +1,39 @@
 use include_dir::{include_dir, Dir, DirEntry};
+use serde::Deserialize;
 use std::path::Path;
 
-static BUILTIN_SKILLS_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/../../microclaw.data/skills");
+static BUILTIN_SKILLS_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../skills/built-in");
 
-pub fn ensure_builtin_skills(data_root: &Path) -> std::io::Result<()> {
-    let skills_root = data_root.join("skills");
-    std::fs::create_dir_all(&skills_root)?;
-    copy_missing_entries(&BUILTIN_SKILLS_DIR, &skills_root)
+pub fn ensure_builtin_skills(skills_root: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(skills_root)?;
+    copy_compatible_skills(&BUILTIN_SKILLS_DIR, skills_root)
+}
+
+fn copy_compatible_skills(embedded: &Dir<'_>, destination: &Path) -> std::io::Result<()> {
+    for entry in embedded.entries() {
+        let DirEntry::Dir(skill_dir) = entry else {
+            continue;
+        };
+        let Some(skill_name) = skill_dir.path().file_name() else {
+            continue;
+        };
+        let Some(skill_md) = skill_dir.get_file("SKILL.md") else {
+            continue;
+        };
+        let content = String::from_utf8_lossy(skill_md.contents());
+        if let Some(reason) = skill_skip_reason(&content) {
+            tracing::debug!(
+                "Skipping built-in skill '{}' on this host: {}",
+                skill_name.to_string_lossy(),
+                reason
+            );
+            continue;
+        }
+        let next_dest = destination.join(skill_name);
+        std::fs::create_dir_all(&next_dest)?;
+        copy_missing_entries(skill_dir, &next_dest)?;
+    }
+    Ok(())
 }
 
 fn copy_missing_entries(embedded: &Dir<'_>, destination: &Path) -> std::io::Result<()> {
@@ -35,6 +61,129 @@ fn copy_missing_entries(embedded: &Dir<'_>, destination: &Path) -> std::io::Resu
     Ok(())
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct SkillFrontmatter {
+    #[serde(default)]
+    platforms: Vec<String>,
+    #[serde(default)]
+    deps: Vec<String>,
+    #[serde(default)]
+    compatibility: SkillCompatibility,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SkillCompatibility {
+    #[serde(default)]
+    os: Vec<String>,
+    #[serde(default)]
+    deps: Vec<String>,
+}
+
+fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
+    let trimmed = content.trim_start_matches('\u{feff}');
+    let rest = trimmed.strip_prefix("---\n")?;
+    let end_idx = rest.find("\n---\n").or_else(|| rest.find("\n...\n"))?;
+    let yaml = &rest[..end_idx];
+    serde_yaml::from_str(yaml).ok()
+}
+
+fn skill_skip_reason(content: &str) -> Option<String> {
+    let fm = parse_frontmatter(content)?;
+    let mut supported = fm.platforms;
+    supported.extend(fm.compatibility.os);
+    supported.sort();
+    supported.dedup();
+    if !platform_allowed(&supported) {
+        return Some(format!(
+            "unsupported platform (current: {}, supported: {})",
+            current_platform(),
+            supported.join(", ")
+        ));
+    }
+
+    let mut deps = fm.deps;
+    deps.extend(fm.compatibility.deps);
+    deps.sort();
+    deps.dedup();
+    let missing: Vec<String> = deps.into_iter().filter(|d| !command_exists(d)).collect();
+    if !missing.is_empty() {
+        return Some(format!("missing dependencies: {}", missing.join(", ")));
+    }
+    None
+}
+
+fn current_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "unknown"
+    }
+}
+
+fn normalize_platform(value: &str) -> String {
+    let v = value.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "macos" | "osx" => "darwin".to_string(),
+        _ => v,
+    }
+}
+
+fn platform_allowed(platforms: &[String]) -> bool {
+    if platforms.is_empty() {
+        return true;
+    }
+    let current = current_platform();
+    platforms.iter().any(|p| {
+        let p = normalize_platform(p);
+        p == "all" || p == "*" || p == current
+    })
+}
+
+fn command_exists(command: &str) -> bool {
+    if command.trim().is_empty() {
+        return true;
+    }
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let paths = std::env::split_paths(&path_var);
+
+    #[cfg(target_os = "windows")]
+    let candidates: Vec<String> = {
+        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        let ext_list: Vec<String> = exts
+            .split(';')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let lower = command.to_ascii_lowercase();
+        if ext_list.iter().any(|ext| lower.ends_with(ext)) {
+            vec![command.to_string()]
+        } else {
+            let mut c = vec![command.to_string()];
+            for ext in ext_list {
+                c.push(format!("{command}{ext}"));
+            }
+            c
+        }
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let candidates: Vec<String> = vec![command.to_string()];
+
+    for base in paths {
+        for candidate in &candidates {
+            let full = base.join(candidate);
+            if full.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,8 +202,9 @@ mod tests {
     #[test]
     fn test_ensure_builtin_skills_writes_missing_files() {
         let root = temp_root();
-        ensure_builtin_skills(&root).unwrap();
-        let sample = root.join("skills").join("pdf").join("SKILL.md");
+        let skills_root = root.join("skills");
+        ensure_builtin_skills(&skills_root).unwrap();
+        let sample = skills_root.join("pdf").join("SKILL.md");
         assert!(sample.exists());
         let content = std::fs::read_to_string(sample).unwrap();
         assert!(!content.trim().is_empty());
@@ -64,12 +214,13 @@ mod tests {
     #[test]
     fn test_ensure_builtin_skills_does_not_overwrite_existing_file() {
         let root = temp_root();
-        let custom_pdf = root.join("skills").join("pdf");
+        let skills_root = root.join("skills");
+        let custom_pdf = skills_root.join("pdf");
         std::fs::create_dir_all(&custom_pdf).unwrap();
         let custom_file = custom_pdf.join("SKILL.md");
         std::fs::write(&custom_file, "custom-content").unwrap();
 
-        ensure_builtin_skills(&root).unwrap();
+        ensure_builtin_skills(&skills_root).unwrap();
         let content = std::fs::read_to_string(custom_file).unwrap();
         assert_eq!(content, "custom-content");
         cleanup(&root);
@@ -78,22 +229,51 @@ mod tests {
     #[test]
     fn test_ensure_builtin_skills_includes_new_macos_and_weather_skills() {
         let root = temp_root();
-        ensure_builtin_skills(&root).unwrap();
-
         let skills_root = root.join("skills");
-        for skill in [
-            "apple-notes",
-            "apple-reminders",
-            "apple-calendar",
-            "weather",
-            "find-skills",
-        ] {
+        ensure_builtin_skills(&skills_root).unwrap();
+
+        for skill in ["pdf", "docx", "xlsx", "pptx", "skill-creator"] {
             let skill_file = skills_root.join(skill).join("SKILL.md");
             assert!(skill_file.exists(), "missing built-in skill: {skill}");
             let content = std::fs::read_to_string(skill_file).unwrap();
             assert!(!content.trim().is_empty(), "empty skill file: {skill}");
         }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(!skills_root.join("apple-notes").exists());
+            assert!(!skills_root.join("apple-reminders").exists());
+            assert!(!skills_root.join("apple-calendar").exists());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(skills_root.join("apple-notes").exists());
+            assert!(skills_root.join("apple-reminders").exists());
+            assert!(skills_root.join("apple-calendar").exists());
+        }
+        if command_exists("curl") {
+            assert!(skills_root.join("find-skills").exists());
+            assert!(skills_root.join("weather").exists());
+        }
 
         cleanup(&root);
+    }
+
+    #[test]
+    fn test_skill_skip_reason_parses_compatibility() {
+        let content = r#"---
+name: x
+description: x
+compatibility:
+  os: [darwin]
+  deps: [curl]
+---
+body
+"#;
+        let reason = skill_skip_reason(content);
+        if cfg!(target_os = "macos") && command_exists("curl") {
+            assert!(reason.is_none());
+        } else {
+            assert!(reason.is_some());
+        }
     }
 }

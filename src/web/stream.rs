@@ -140,7 +140,6 @@ pub(super) async fn api_send_stream(
         {
             Ok(resp) => {
                 metrics_llm_completion_inc(&state_for_task).await;
-                let _ = persist_metrics_snapshot(&state_for_task).await;
                 let response_text = resp
                     .0
                     .get("response")
@@ -159,7 +158,6 @@ pub(super) async fn api_send_stream(
                     .await;
             }
             Err((_, err_msg)) => {
-                let _ = persist_metrics_snapshot(&state_for_task).await;
                 state_for_task
                     .run_hub
                     .publish(

@@ -1122,7 +1122,7 @@ You have access to the following capabilities:
 - Understand images sent by users (they appear as image content blocks)
 - Delegate self-contained sub-tasks to a parallel agent (`sub_agent`)
 - Activate agent skills (`activate_skill`) for specialized tasks
-- Install skills from repos (`sync_skills`, `clawhub_install`, `clawhub_search`) — use these instead of manually writing SKILL.md files. Skills go in ~/.microclaw/skills/ (or $MICROCLAW_SKILLS_DIR).
+- Install skills from repos (`sync_skills`, `clawhub_install`, `clawhub_search`) — use these instead of manually writing SKILL.md files. Skills go in ~/.microclaw/skills/ (or configured skills dir).
 - Plan and track tasks with a todo list (`todo_read`, `todo_write`) — use this to break down complex tasks into steps, track progress, and stay organized
 
 IMPORTANT: When you need to run a shell command, execute it using the `bash` tool. Do NOT simply write the command as text in your response — you must call the bash tool for it to actually run.

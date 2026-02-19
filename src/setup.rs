@@ -122,6 +122,23 @@ fn docker_available_for_setup() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+fn default_data_dir_for_setup() -> String {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from))
+        .map(|p| p.join(".microclaw"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".microclaw"))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn default_working_dir_for_setup() -> String {
+    Path::new(&default_data_dir_for_setup())
+        .join("working_dir")
+        .to_string_lossy()
+        .to_string()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProviderProtocol {
     Anthropic,
@@ -461,7 +478,7 @@ impl SetupApp {
                     value: existing
                         .get("DATA_DIR")
                         .cloned()
-                        .unwrap_or_else(|| "./microclaw.data".into()),
+                        .unwrap_or_else(default_data_dir_for_setup),
                     required: false,
                     secret: false,
                 },
@@ -478,7 +495,7 @@ impl SetupApp {
                     value: existing
                         .get("WORKING_DIR")
                         .cloned()
-                        .unwrap_or_else(|| "./tmp".into()),
+                        .unwrap_or_else(default_working_dir_for_setup),
                     required: false,
                     secret: false,
                 },
@@ -953,7 +970,7 @@ impl SetupApp {
 
         let data_dir = self.field_value("DATA_DIR");
         let dir = if data_dir.is_empty() {
-            "./microclaw.data".to_string()
+            default_data_dir_for_setup()
         } else {
             data_dir
         };
@@ -964,7 +981,7 @@ impl SetupApp {
 
         let working_dir = self.field_value("WORKING_DIR");
         let workdir = if working_dir.is_empty() {
-            "./tmp".to_string()
+            default_working_dir_for_setup()
         } else {
             working_dir
         };
@@ -1273,9 +1290,9 @@ impl SetupApp {
             "LLM_BASE_URL" => find_provider_preset(&provider)
                 .map(|p| p.default_base_url.to_string())
                 .unwrap_or_default(),
-            "DATA_DIR" => "./microclaw.data".into(),
+            "DATA_DIR" => default_data_dir_for_setup(),
             "TIMEZONE" => "UTC".into(),
-            "WORKING_DIR" => "./tmp".into(),
+            "WORKING_DIR" => default_working_dir_for_setup(),
             "SANDBOX_ENABLED" => {
                 if docker_available_for_setup() {
                     "true".into()
@@ -1788,7 +1805,7 @@ fn save_config_yaml(
     let data_dir = values
         .get("DATA_DIR")
         .cloned()
-        .unwrap_or_else(|| "./microclaw.data".into());
+        .unwrap_or_else(default_data_dir_for_setup);
     yaml.push_str(&format!("data_dir: \"{}\"\n", data_dir));
     let tz = values
         .get("TIMEZONE")
@@ -1798,7 +1815,7 @@ fn save_config_yaml(
     let working_dir = values
         .get("WORKING_DIR")
         .cloned()
-        .unwrap_or_else(|| "./tmp".into());
+        .unwrap_or_else(default_working_dir_for_setup);
     yaml.push_str(&format!("working_dir: \"{}\"\n", working_dir));
     let sandbox_enabled = values
         .get("SANDBOX_ENABLED")

@@ -13,6 +13,13 @@ pub struct SkillMetadata {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SkillAvailability {
+    pub meta: SkillMetadata,
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[allow(dead_code)]
 struct SkillFrontmatter {
@@ -95,16 +102,32 @@ impl SkillManager {
         self.discover_skills_internal(false)
     }
 
+    /// Discover skills with availability diagnostics.
+    pub fn discover_skills_with_status(&self, include_unavailable: bool) -> Vec<SkillAvailability> {
+        let mut statuses = self.discover_skill_statuses();
+        if !include_unavailable {
+            statuses.retain(|s| s.available);
+        }
+        statuses
+    }
+
     /// Reload skills from disk (live reload)
     pub fn reload(&self) -> Vec<SkillMetadata> {
         self.discover_skills()
     }
 
     fn discover_skills_internal(&self, include_unavailable: bool) -> Vec<SkillMetadata> {
-        let mut skills = Vec::new();
+        self.discover_skills_with_status(include_unavailable)
+            .into_iter()
+            .map(|s| s.meta)
+            .collect()
+    }
+
+    fn discover_skill_statuses(&self) -> Vec<SkillAvailability> {
+        let mut statuses = Vec::new();
         let entries = match std::fs::read_dir(&self.skills_dir) {
             Ok(e) => e,
-            Err(_) => return skills,
+            Err(_) => return statuses,
         };
 
         for entry in entries.flatten() {
@@ -118,15 +141,24 @@ impl SkillManager {
             }
             if let Ok(content) = std::fs::read_to_string(&skill_md) {
                 if let Some((meta, _body)) = parse_skill_md(&content, &path) {
-                    if include_unavailable || self.skill_is_available(&meta).is_ok() {
-                        skills.push(meta);
-                    }
+                    match self.skill_is_available(&meta) {
+                        Ok(()) => statuses.push(SkillAvailability {
+                            meta,
+                            available: true,
+                            reason: None,
+                        }),
+                        Err(reason) => statuses.push(SkillAvailability {
+                            meta,
+                            available: false,
+                            reason: Some(reason),
+                        }),
+                    };
                 }
             }
         }
 
-        skills.sort_by(|a, b| a.name.cmp(&b.name));
-        skills
+        statuses.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
+        statuses
     }
 
     /// Load a skill by name if it is available on the current platform.
@@ -136,18 +168,23 @@ impl SkillManager {
 
     /// Load a skill with availability diagnostics.
     pub fn load_skill_checked(&self, name: &str) -> Result<(SkillMetadata, String), String> {
-        let all_skills = self.discover_skills_internal(true);
+        let all_skills = self.discover_skills_with_status(true);
 
         for skill in all_skills {
-            if skill.name != name {
+            if skill.meta.name != name {
                 continue;
             }
-
-            self.skill_is_available(&skill)?;
-
-            let skill_md = skill.dir_path.join("SKILL.md");
+            if !skill.available {
+                let reason = skill
+                    .reason
+                    .unwrap_or_else(|| "unknown availability failure".to_string());
+                return Err(format!(
+                    "Skill '{name}' is currently unavailable: {reason}\nRun `microclaw skill available --all` for full diagnostics."
+                ));
+            }
+            let skill_md = skill.meta.dir_path.join("SKILL.md");
             if let Ok(content) = std::fs::read_to_string(&skill_md) {
-                if let Some((meta, body)) = parse_skill_md(&content, &skill.dir_path) {
+                if let Some((meta, body)) = parse_skill_md(&content, &skill.meta.dir_path) {
                     return Ok((meta, body));
                 }
             }
@@ -216,6 +253,38 @@ impl SkillManager {
             output.push_str(&format!(
                 "• {} — {} [{}]\n",
                 skill.name, skill.description, skill.source
+            ));
+        }
+        output
+    }
+
+    /// Build a user-facing list, optionally including unavailable skills and reasons.
+    pub fn list_skills_formatted_all(&self) -> String {
+        let statuses = self.discover_skills_with_status(true);
+        if statuses.is_empty() {
+            return "No skills found in skills directory.".into();
+        }
+        let available: Vec<&SkillAvailability> = statuses.iter().filter(|s| s.available).collect();
+        let unavailable: Vec<&SkillAvailability> =
+            statuses.iter().filter(|s| !s.available).collect();
+        let mut output = String::new();
+        output.push_str(&format!("Available skills ({}):\n\n", available.len()));
+        for skill in available {
+            output.push_str(&format!(
+                "• {} — {} [{}]\n",
+                skill.meta.name, skill.meta.description, skill.meta.source
+            ));
+        }
+        output.push('\n');
+        output.push_str(&format!("Unavailable skills ({}):\n\n", unavailable.len()));
+        for skill in unavailable {
+            output.push_str(&format!(
+                "• {} — {}\n",
+                skill.meta.name,
+                skill
+                    .reason
+                    .as_deref()
+                    .unwrap_or("unavailable for unknown reason")
             ));
         }
         output
@@ -529,6 +598,74 @@ Instructions.
         let sm = SkillManager::new(dir.to_str().unwrap());
         let catalog = sm.build_skills_catalog();
         assert!(catalog.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_list_skills_formatted_all_includes_unavailable_reasons() {
+        let dir = std::env::temp_dir().join(format!(
+            "microclaw_skills_all_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let available = dir.join("available");
+        std::fs::create_dir_all(&available).unwrap();
+        std::fs::write(
+            available.join("SKILL.md"),
+            r#"---
+name: available
+description: Available skill
+---
+ok
+"#,
+        )
+        .unwrap();
+
+        let unavailable = dir.join("unavailable");
+        std::fs::create_dir_all(&unavailable).unwrap();
+        std::fs::write(
+            unavailable.join("SKILL.md"),
+            r#"---
+name: unavailable
+description: Missing dependency
+deps: [definitely_missing_dep_123456]
+---
+nope
+"#,
+        )
+        .unwrap();
+
+        let sm = SkillManager::from_skills_dir(dir.to_str().unwrap());
+        let text = sm.list_skills_formatted_all();
+        assert!(text.contains("Available skills (1)"));
+        assert!(text.contains("available"));
+        assert!(text.contains("Unavailable skills (1)"));
+        assert!(text.contains("definitely_missing_dep_123456"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_skill_checked_unavailable_has_diagnostic_hint() {
+        let dir = std::env::temp_dir().join(format!(
+            "microclaw_skills_unavailable_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let unavailable = dir.join("bad");
+        std::fs::create_dir_all(&unavailable).unwrap();
+        std::fs::write(
+            unavailable.join("SKILL.md"),
+            r#"---
+name: bad
+description: Missing dependency
+deps: [definitely_missing_dep_654321]
+---
+nope
+"#,
+        )
+        .unwrap();
+        let sm = SkillManager::from_skills_dir(dir.to_str().unwrap());
+        let err = sm.load_skill_checked("bad").unwrap_err();
+        assert!(err.contains("currently unavailable"));
+        assert!(err.contains("available --all"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

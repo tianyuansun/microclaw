@@ -3092,6 +3092,126 @@ mod tests {
     }
 
     #[test]
+    fn test_migration_matrix_upgrades_multiple_legacy_versions() {
+        fn seed_legacy_db(dir: &std::path::Path, version: i64) {
+            let db_path = dir.join("microclaw.db");
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE chats (
+                    chat_id INTEGER PRIMARY KEY,
+                    chat_title TEXT,
+                    chat_type TEXT NOT NULL DEFAULT 'private',
+                    last_message_time TEXT NOT NULL
+                 );
+                 CREATE TABLE messages (
+                    id TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    sender_name TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    is_from_bot INTEGER NOT NULL DEFAULT 0,
+                    timestamp TEXT NOT NULL,
+                    PRIMARY KEY (id, chat_id)
+                 );
+                 CREATE TABLE scheduled_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    prompt TEXT NOT NULL,
+                    schedule_type TEXT NOT NULL DEFAULT 'cron',
+                    schedule_value TEXT NOT NULL,
+                    next_run TEXT NOT NULL,
+                    last_run TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL
+                 );
+                 CREATE TABLE sessions (
+                    chat_id INTEGER PRIMARY KEY,
+                    messages_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                 );
+                 CREATE TABLE memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER,
+                    content TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS db_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO db_meta(key, value) VALUES('schema_version', ?1)",
+                params![version.to_string()],
+            )
+            .unwrap();
+
+            if version >= 5 {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS api_keys (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        label TEXT NOT NULL,
+                        key_hash TEXT NOT NULL UNIQUE,
+                        prefix TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        revoked_at TEXT,
+                        last_used_at TEXT
+                    );",
+                )
+                .unwrap();
+            }
+            if version >= 7 {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS metrics_history (
+                        timestamp_ms INTEGER PRIMARY KEY,
+                        llm_completions INTEGER NOT NULL DEFAULT 0,
+                        llm_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        llm_output_tokens INTEGER NOT NULL DEFAULT 0,
+                        http_requests INTEGER NOT NULL DEFAULT 0,
+                        tool_executions INTEGER NOT NULL DEFAULT 0,
+                        mcp_calls INTEGER NOT NULL DEFAULT 0,
+                        active_sessions INTEGER NOT NULL DEFAULT 0
+                    );",
+                )
+                .unwrap();
+            }
+            drop(conn);
+        }
+
+        for version in [1_i64, 5_i64, 7_i64] {
+            let dir = std::env::temp_dir().join(format!(
+                "microclaw_migration_matrix_{}_{}",
+                version,
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            seed_legacy_db(&dir, version);
+
+            let db = Database::new(dir.to_str().unwrap()).unwrap();
+            let conn = db.lock_conn();
+            let actual: String = conn
+                .query_row(
+                    "SELECT value FROM db_meta WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                actual,
+                SCHEMA_VERSION_CURRENT.to_string(),
+                "legacy schema_version {} should migrate to current",
+                version
+            );
+            assert!(table_has_column(&conn, "sessions", "parent_session_key").unwrap());
+            assert!(table_has_column(&conn, "sessions", "fork_point").unwrap());
+            assert!(table_has_column(&conn, "api_keys", "expires_at").unwrap());
+            assert!(table_has_column(&conn, "api_keys", "rotated_from_key_id").unwrap());
+            drop(conn);
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
     fn test_upsert_chat_insert_and_update() {
         let (db, dir) = test_db();
         db.upsert_chat(100, Some("Test Chat"), "group").unwrap();

@@ -120,7 +120,7 @@ impl Tool for ClawHubInstallTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "clawhub_install".to_string(),
-            description: "Install a skill from ClawHub into microclaw's skills directory. After installing, the skill will be in the skills folder at microclaw.data/skills/<slug>/. Use this instead of running clawdhub CLI commands - this is the built-in way to install ClawHub skills."
+            description: "Install a skill from ClawHub into ~/.microclaw/skills/ (or configured skills dir). Use this instead of running clawdhub CLI commands - this is the built-in way to install ClawHub skills."
                 .to_string(),
             input_schema: schema_object(
                 serde_json::json!({
