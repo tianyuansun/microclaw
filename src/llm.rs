@@ -14,8 +14,8 @@ use crate::codex_auth::{
 use crate::config::Config;
 #[cfg(test)]
 use crate::config::WorkingDirIsolation;
-use crate::error::MicroClawError;
-use crate::llm_types::{
+use microclaw_core::error::MicroClawError;
+use microclaw_core::llm_types::{
     ContentBlock, ImageSource, Message, MessageContent, MessagesRequest, MessagesResponse,
     ResponseContentBlock, ToolDefinition, Usage,
 };
@@ -684,6 +684,7 @@ pub struct OpenAiProvider {
     model: String,
     max_tokens: u32,
     is_openai_codex: bool,
+    prefer_max_completion_tokens: bool,
     chat_url: String,
     responses_url: String,
 }
@@ -730,6 +731,7 @@ impl OpenAiProvider {
             model: config.model.clone(),
             max_tokens: config.max_tokens,
             is_openai_codex,
+            prefer_max_completion_tokens: config.llm_provider.eq_ignore_ascii_case("openai"),
             chat_url: format!("{}/chat/completions", base.trim_end_matches('/')),
             responses_url: format!("{}/responses", base.trim_end_matches('/')),
         }
@@ -816,6 +818,23 @@ fn switch_to_max_completion_tokens(body: &mut serde_json::Value) -> bool {
     false
 }
 
+fn set_output_token_limit(
+    body: &mut serde_json::Value,
+    max_tokens: u32,
+    prefer_max_completion_tokens: bool,
+) {
+    if let Some(obj) = body.as_object_mut() {
+        obj.remove("max_tokens");
+        obj.remove("max_completion_tokens");
+        let key = if prefer_max_completion_tokens {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
+        obj.insert(key.to_string(), json!(max_tokens));
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OaiResponsesResponse {
     output: Vec<OaiResponsesOutputItem>,
@@ -871,9 +890,13 @@ impl LlmProvider for OpenAiProvider {
 
         let mut body = json!({
             "model": self.model,
-            "max_tokens": self.max_tokens,
             "messages": oai_messages,
         });
+        set_output_token_limit(
+            &mut body,
+            self.max_tokens,
+            self.prefer_max_completion_tokens,
+        );
 
         if let Some(ref tool_defs) = tools {
             if !tool_defs.is_empty() {
@@ -964,10 +987,14 @@ impl LlmProvider for OpenAiProvider {
 
         let mut body = json!({
             "model": self.model,
-            "max_tokens": self.max_tokens,
             "messages": oai_messages,
             "stream": true,
         });
+        set_output_token_limit(
+            &mut body,
+            self.max_tokens,
+            self.prefer_max_completion_tokens,
+        );
 
         if let Some(ref tool_defs) = tools {
             if !tool_defs.is_empty() {
@@ -1993,6 +2020,22 @@ mod tests {
     }
 
     #[test]
+    fn test_set_output_token_limit_prefers_max_completion_tokens() {
+        let mut body = json!({"model":"gpt-5.2","messages":[],"max_tokens":1});
+        set_output_token_limit(&mut body, 256, true);
+        assert_eq!(body.get("max_tokens"), None);
+        assert_eq!(body["max_completion_tokens"], 256);
+    }
+
+    #[test]
+    fn test_set_output_token_limit_uses_max_tokens_for_compat() {
+        let mut body = json!({"model":"qwen","messages":[],"max_completion_tokens":1});
+        set_output_token_limit(&mut body, 512, false);
+        assert_eq!(body.get("max_completion_tokens"), None);
+        assert_eq!(body["max_tokens"], 512);
+    }
+
+    #[test]
     fn test_build_stream_response_tool_json_parsing() {
         let mut tool_blocks = std::collections::HashMap::new();
         tool_blocks.insert(
@@ -2044,6 +2087,7 @@ mod tests {
             data_dir: "/tmp".into(),
             working_dir: "/tmp".into(),
             working_dir_isolation: WorkingDirIsolation::Shared,
+            sandbox: crate::config::SandboxConfig::default(),
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
@@ -2100,6 +2144,7 @@ mod tests {
             data_dir: "/tmp".into(),
             working_dir: "/tmp".into(),
             working_dir_isolation: WorkingDirIsolation::Shared,
+            sandbox: crate::config::SandboxConfig::default(),
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
@@ -2221,6 +2266,7 @@ mod tests {
             data_dir: "/tmp".into(),
             working_dir: "/tmp".into(),
             working_dir_isolation: WorkingDirIsolation::Shared,
+            sandbox: crate::config::SandboxConfig::default(),
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
@@ -2381,6 +2427,7 @@ mod tests {
             data_dir: "/tmp".into(),
             working_dir: "/tmp".into(),
             working_dir_isolation: WorkingDirIsolation::Shared,
+            sandbox: crate::config::SandboxConfig::default(),
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],

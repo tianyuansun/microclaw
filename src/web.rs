@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::Argon2;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -12,19 +14,29 @@ use axum::{Json, Router};
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info};
 
 use crate::agent_engine::{
     process_with_agent, process_with_agent_with_events, AgentEvent, AgentRequestContext,
 };
-use crate::channel::ConversationKind;
-use crate::channel::{deliver_and_store_bot_message, get_chat_routing, session_source_for_chat};
-use crate::channel_adapter::{ChannelAdapter, ChannelRegistry};
 use crate::config::{Config, WorkingDirIsolation};
-use crate::db::{call_blocking, ChatSummary, StoredMessage};
+use crate::otlp::{OtlpExporter, OtlpMetricSnapshot};
 use crate::runtime::AppState;
-use crate::usage::build_usage_report;
+use microclaw_channels::channel::ConversationKind;
+use microclaw_channels::channel::{
+    deliver_and_store_bot_message, get_chat_routing, session_source_for_chat,
+};
+use microclaw_channels::channel_adapter::{ChannelAdapter, ChannelRegistry};
+use microclaw_storage::db::{call_blocking, ChatSummary, MetricsHistoryPoint, StoredMessage};
+use microclaw_storage::usage::build_usage_report;
+
+mod auth;
+mod config;
+mod metrics;
+mod sessions;
+mod stream;
 
 static WEB_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
@@ -56,11 +68,60 @@ impl ChannelAdapter for WebAdapter {
 #[derive(Clone)]
 struct WebState {
     app_state: Arc<AppState>,
-    auth_token: Option<String>,
+    legacy_auth_token: Option<String>,
     run_hub: RunHub,
     session_hub: SessionHub,
     request_hub: RequestHub,
+    auth_hub: AuthHub,
+    metrics: Arc<Mutex<WebMetrics>>,
+    otlp: Option<Arc<OtlpExporter>>,
+    otlp_last_export: Arc<Mutex<Option<Instant>>>,
+    otlp_export_interval: Duration,
     limits: WebLimits,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum AuthScope {
+    Read,
+    Write,
+    Admin,
+    Approvals,
+}
+
+#[derive(Clone, Debug)]
+struct AuthIdentity {
+    scopes: Vec<String>,
+    actor: String,
+}
+
+impl AuthIdentity {
+    fn allows(&self, required: AuthScope) -> bool {
+        let want = match required {
+            AuthScope::Read => "operator.read",
+            AuthScope::Write => "operator.write",
+            AuthScope::Admin => "operator.admin",
+            AuthScope::Approvals => "operator.approvals",
+        };
+        self.scopes
+            .iter()
+            .any(|s| s == "operator.admin" || s == want)
+    }
+}
+
+#[derive(Clone, Default)]
+struct AuthHub {
+    buckets: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WebMetrics {
+    http_requests: i64,
+    llm_completions: i64,
+    llm_input_tokens: i64,
+    llm_output_tokens: i64,
+    tool_executions: i64,
+    mcp_calls: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -317,6 +378,164 @@ impl RequestHub {
     }
 }
 
+impl AuthHub {
+    async fn allow_login_attempt(
+        &self,
+        client_key: &str,
+        max_attempts: usize,
+        window: Duration,
+    ) -> bool {
+        let now = Instant::now();
+        let mut guard = self.buckets.lock().await;
+        let bucket = guard.entry(client_key.to_string()).or_default();
+        while let Some(ts) = bucket.front() {
+            if now.duration_since(*ts) > window {
+                let _ = bucket.pop_front();
+            } else {
+                break;
+            }
+        }
+        if bucket.len() >= max_attempts {
+            return false;
+        }
+        bucket.push_back(now);
+        true
+    }
+}
+
+async fn metrics_http_inc(state: &WebState) {
+    let mut m = state.metrics.lock().await;
+    m.http_requests += 1;
+}
+
+async fn metrics_llm_completion_inc(state: &WebState) {
+    let mut m = state.metrics.lock().await;
+    m.llm_completions += 1;
+}
+
+async fn persist_metrics_snapshot(state: &WebState) -> Result<(), (StatusCode, String)> {
+    let snapshot = state.metrics.lock().await.clone();
+    let active_sessions = state.request_hub.sessions.lock().await.len() as i64;
+    let now = chrono::Utc::now();
+    let bucket_ts_ms = (now.timestamp() / 60) * 60 * 1000;
+    let point = MetricsHistoryPoint {
+        timestamp_ms: bucket_ts_ms,
+        llm_completions: snapshot.llm_completions,
+        llm_input_tokens: snapshot.llm_input_tokens,
+        llm_output_tokens: snapshot.llm_output_tokens,
+        http_requests: snapshot.http_requests,
+        tool_executions: snapshot.tool_executions,
+        mcp_calls: snapshot.mcp_calls,
+        active_sessions,
+    };
+    call_blocking(state.app_state.db.clone(), move |db| {
+        db.upsert_metrics_history(&point)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let retention_days = metrics_history_retention_days(&state.app_state.config);
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days);
+    let cutoff_ms = cutoff.timestamp_millis();
+    let _ = call_blocking(state.app_state.db.clone(), move |db| {
+        db.cleanup_metrics_history_before(cutoff_ms).map(|_| ())
+    })
+    .await;
+
+    if let Some(exporter) = state.otlp.clone() {
+        let should_export = {
+            let mut last = state.otlp_last_export.lock().await;
+            let now_i = Instant::now();
+            let due = last
+                .as_ref()
+                .map(|t| now_i.duration_since(*t) >= state.otlp_export_interval)
+                .unwrap_or(true);
+            if due {
+                *last = Some(now_i);
+            }
+            due
+        };
+        if should_export {
+            let metric_snapshot = OtlpMetricSnapshot {
+                timestamp_unix_nano: now.timestamp_nanos_opt().unwrap_or(0) as u64,
+                http_requests: snapshot.http_requests,
+                llm_completions: snapshot.llm_completions,
+                llm_input_tokens: snapshot.llm_input_tokens,
+                llm_output_tokens: snapshot.llm_output_tokens,
+                tool_executions: snapshot.tool_executions,
+                mcp_calls: snapshot.mcp_calls,
+                active_sessions,
+            };
+            tokio::spawn(async move {
+                if let Err(e) = exporter.enqueue_metrics(metric_snapshot) {
+                    tracing::warn!("otlp export failed: {}", e);
+                }
+            });
+        }
+    }
+    Ok(())
+}
+
+fn otlp_export_interval(config: &Config) -> Duration {
+    if let Some(map) = config
+        .channels
+        .get("observability")
+        .and_then(|v| v.as_mapping())
+    {
+        if let Some(n) = map
+            .get(serde_yaml::Value::String(
+                "otlp_export_interval_seconds".to_string(),
+            ))
+            .and_then(|v| v.as_u64())
+        {
+            return Duration::from_secs(n.clamp(1, 3600));
+        }
+    }
+    Duration::from_secs(15)
+}
+
+fn metrics_history_retention_days(config: &Config) -> i64 {
+    if let Some(map) = config.channels.get("web").and_then(|v| v.as_mapping()) {
+        if let Some(n) = map
+            .get(serde_yaml::Value::String(
+                "metrics_history_retention_days".to_string(),
+            ))
+            .and_then(|v| v.as_i64())
+        {
+            return n.clamp(1, 3650);
+        }
+    }
+    30
+}
+
+async fn audit_log(
+    state: &WebState,
+    kind: &str,
+    actor: &str,
+    action: &str,
+    target: Option<&str>,
+    status: &str,
+    detail: Option<&str>,
+) {
+    let kind = kind.to_string();
+    let actor = actor.to_string();
+    let action = action.to_string();
+    let target = target.map(str::to_string);
+    let status = status.to_string();
+    let detail = detail.map(str::to_string);
+    let _ = call_blocking(state.app_state.db.clone(), move |db| {
+        db.log_audit_event(
+            &kind,
+            &actor,
+            &action,
+            target.as_deref(),
+            &status,
+            detail.as_deref(),
+        )
+        .map(|_| ())
+    })
+    .await;
+}
+
 fn auth_token_from_headers(headers: &HeaderMap) -> Option<String> {
     headers
         .get("authorization")
@@ -326,21 +545,189 @@ fn auth_token_from_headers(headers: &HeaderMap) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-fn require_auth(
-    headers: &HeaderMap,
-    expected_token: Option<&str>,
-) -> Result<(), (StatusCode, String)> {
-    let Some(expected) = expected_token else {
-        return Ok(());
-    };
+fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
 
-    let provided = auth_token_from_headers(headers).unwrap_or_default();
-
-    if provided == expected {
-        Ok(())
-    } else {
-        Err((StatusCode::UNAUTHORIZED, "unauthorized".into()))
+fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    let raw = headers.get("cookie")?.to_str().ok()?;
+    for part in raw.split(';') {
+        let mut kv = part.trim().splitn(2, '=');
+        let k = kv.next()?.trim();
+        let v = kv.next().unwrap_or("").trim();
+        if k == name && !v.is_empty() {
+            return Some(v.to_string());
+        }
     }
+    None
+}
+
+fn session_cookie_header(session_id: &str, expires_at: &str) -> String {
+    let mut header =
+        format!("mc_session={session_id}; Path=/; HttpOnly; SameSite=Strict; Expires={expires_at}");
+    header.push_str("; Secure");
+    header
+}
+
+fn csrf_cookie_header(csrf_token: &str, expires_at: &str) -> String {
+    let mut header = format!("mc_csrf={csrf_token}; Path=/; SameSite=Strict; Expires={expires_at}");
+    header.push_str("; Secure");
+    header
+}
+
+fn clear_session_cookie_header() -> String {
+    "mc_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0".to_string()
+}
+
+fn clear_csrf_cookie_header() -> String {
+    "mc_csrf=; Path=/; SameSite=Strict; Max-Age=0".to_string()
+}
+
+fn make_password_hash(password: &str) -> String {
+    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
+        .unwrap_or_else(|_| SaltString::from_b64("AAAAAAAAAAAAAAAAAAAAAA").unwrap());
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .unwrap_or_default()
+}
+
+fn verify_password_hash(stored: &str, password: &str) -> bool {
+    if let Ok(parsed) = PasswordHash::new(stored) {
+        return Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok();
+    }
+    let mut parts = stored.split('$');
+    let Some(ver) = parts.next() else {
+        return false;
+    };
+    if ver != "v1" {
+        return false;
+    }
+    let Some(salt) = parts.next() else {
+        return false;
+    };
+    let Some(hash) = parts.next() else {
+        return false;
+    };
+    sha256_hex(&format!("{salt}:{password}")) == hash
+}
+
+fn client_key_from_headers(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "global".to_string())
+}
+
+async fn require_scope(
+    state: &WebState,
+    headers: &HeaderMap,
+    required: AuthScope,
+) -> Result<AuthIdentity, (StatusCode, String)> {
+    let needs_csrf = matches!(
+        required,
+        AuthScope::Write | AuthScope::Admin | AuthScope::Approvals
+    );
+    let has_password = call_blocking(state.app_state.db.clone(), |db| db.get_auth_password_hash())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .is_some();
+    if state.legacy_auth_token.is_none() && !has_password {
+        let id = AuthIdentity {
+            scopes: vec![
+                "operator.read".to_string(),
+                "operator.write".to_string(),
+                "operator.admin".to_string(),
+                "operator.approvals".to_string(),
+            ],
+            actor: "bootstrap".to_string(),
+        };
+        if id.allows(required) {
+            return Ok(id);
+        }
+        return Err((StatusCode::FORBIDDEN, "forbidden".into()));
+    }
+
+    if let Some(provided) = auth_token_from_headers(headers) {
+        if let Some(expected) = state.legacy_auth_token.as_deref() {
+            if provided == expected {
+                let id = AuthIdentity {
+                    scopes: vec![
+                        "operator.read".to_string(),
+                        "operator.write".to_string(),
+                        "operator.admin".to_string(),
+                        "operator.approvals".to_string(),
+                    ],
+                    actor: "legacy-token".to_string(),
+                };
+                if id.allows(required) {
+                    return Ok(id);
+                }
+            }
+        }
+
+        let key_hash = sha256_hex(&provided);
+        if let Some((key_id, scopes)) = call_blocking(state.app_state.db.clone(), move |db| {
+            db.validate_api_key_hash(&key_hash)
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        {
+            let id = AuthIdentity {
+                scopes,
+                actor: format!("api-key:{key_id}"),
+            };
+            if id.allows(required) {
+                return Ok(id);
+            }
+            return Err((StatusCode::FORBIDDEN, "forbidden".into()));
+        }
+    }
+
+    if let Some(session_id) = parse_cookie(headers, "mc_session") {
+        let session_id_for_validate = session_id.clone();
+        let valid = call_blocking(state.app_state.db.clone(), move |db| {
+            db.validate_auth_session(&session_id_for_validate)
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if valid {
+            if needs_csrf {
+                let cookie_csrf = parse_cookie(headers, "mc_csrf");
+                let header_csrf = headers
+                    .get("x-csrf-token")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                if cookie_csrf.is_none() || header_csrf.is_none() || cookie_csrf != header_csrf {
+                    return Err((
+                        StatusCode::FORBIDDEN,
+                        "missing or invalid csrf token".into(),
+                    ));
+                }
+            }
+            let id = AuthIdentity {
+                scopes: vec![
+                    "operator.read".to_string(),
+                    "operator.write".to_string(),
+                    "operator.admin".to_string(),
+                    "operator.approvals".to_string(),
+                ],
+                actor: format!("session:{session_id}"),
+            };
+            if id.allows(required) {
+                return Ok(id);
+            }
+            return Err((StatusCode::FORBIDDEN, "forbidden".into()));
+        }
+    }
+
+    Err((StatusCode::UNAUTHORIZED, "unauthorized".into()))
 }
 
 fn normalize_session_key(session_key: Option<&str>) -> String {
@@ -457,6 +844,63 @@ struct UpdateConfigRequest {
     web_session_idle_ttl_seconds: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LoginRequest {
+    password: String,
+    label: Option<String>,
+    remember_days: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetPasswordRequest {
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateApiKeyRequest {
+    label: String,
+    scopes: Vec<String>,
+    expires_days: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RotateApiKeyRequest {
+    label: Option<String>,
+    scopes: Option<Vec<String>>,
+    expires_days: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ForkSessionRequest {
+    source_session_key: String,
+    target_session_key: Option<String>,
+    fork_point: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetricsHistoryQuery {
+    minutes: Option<i64>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionTreeQuery {
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditQuery {
+    kind: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigWarning {
+    code: &'static str,
+    severity: &'static str,
+    message: String,
+}
+
 /// Convert a serde_json::Value to a serde_yaml::Value for channel config merging.
 fn json_to_yaml_value(v: &serde_json::Value) -> serde_yaml::Value {
     match v {
@@ -551,165 +995,12 @@ async fn api_health(
     headers: HeaderMap,
     State(state): State<WebState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
+    metrics_http_inc(&state).await;
+    require_scope(&state, &headers, AuthScope::Read).await?;
     Ok(Json(json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
         "web_enabled": state.app_state.config.web_enabled,
-    })))
-}
-
-async fn api_get_config(
-    headers: HeaderMap,
-    State(state): State<WebState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-
-    let path = config_path_for_save()?;
-    Ok(Json(json!({
-        "ok": true,
-        "path": path,
-        "config": redact_config(&state.app_state.config),
-        "requires_restart": true
-    })))
-}
-
-async fn api_update_config(
-    headers: HeaderMap,
-    State(state): State<WebState>,
-    Json(body): Json<UpdateConfigRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-
-    let mut cfg = state.app_state.config.clone();
-
-    if let Some(v) = body.llm_provider {
-        cfg.llm_provider = v;
-    }
-    if let Some(v) = body.api_key {
-        cfg.api_key = v;
-    }
-    if let Some(v) = body.model {
-        cfg.model = v;
-    }
-    if let Some(v) = body.llm_base_url {
-        cfg.llm_base_url = v;
-    }
-    if let Some(v) = body.max_tokens {
-        cfg.max_tokens = v;
-    }
-    if let Some(v) = body.max_tool_iterations {
-        cfg.max_tool_iterations = v;
-    }
-    if let Some(v) = body.max_document_size_mb {
-        cfg.max_document_size_mb = v;
-    }
-    if let Some(v) = body.memory_token_budget {
-        cfg.memory_token_budget = v;
-    }
-    if let Some(v) = body.embedding_provider {
-        cfg.embedding_provider = v;
-    }
-    if let Some(v) = body.embedding_api_key {
-        cfg.embedding_api_key = v;
-    }
-    if let Some(v) = body.embedding_base_url {
-        cfg.embedding_base_url = v;
-    }
-    if let Some(v) = body.embedding_model {
-        cfg.embedding_model = v;
-    }
-    if let Some(v) = body.embedding_dim {
-        cfg.embedding_dim = v;
-    }
-    if let Some(v) = body.working_dir_isolation {
-        cfg.working_dir_isolation = v;
-    }
-    if let Some(v) = body.telegram_bot_token {
-        cfg.telegram_bot_token = v;
-    }
-    if let Some(v) = body.bot_username {
-        cfg.bot_username = v;
-    }
-    if let Some(v) = body.discord_bot_token {
-        cfg.discord_bot_token = if v.trim().is_empty() { None } else { Some(v) };
-    }
-    if let Some(v) = body.discord_allowed_channels {
-        cfg.discord_allowed_channels = v;
-    }
-
-    // Generic channel config merge — handles any channel (slack, feishu, future ones)
-    if let Some(channel_configs) = body.channel_configs {
-        for (channel_name, fields) in channel_configs {
-            let entry = cfg
-                .channels
-                .entry(channel_name)
-                .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
-            if let Some(map) = entry.as_mapping_mut() {
-                for (field_key, json_val) in fields {
-                    // Skip empty strings (treated as "no change")
-                    if let Some(s) = json_val.as_str() {
-                        if s.trim().is_empty() {
-                            continue;
-                        }
-                    }
-                    let yaml_val = json_to_yaml_value(&json_val);
-                    map.insert(serde_yaml::Value::String(field_key), yaml_val);
-                }
-            }
-        }
-    }
-
-    if let Some(v) = body.reflector_enabled {
-        cfg.reflector_enabled = v;
-    }
-    if let Some(v) = body.reflector_interval_mins {
-        cfg.reflector_interval_mins = v;
-    }
-
-    if let Some(v) = body.show_thinking {
-        cfg.show_thinking = v;
-    }
-    if let Some(v) = body.web_enabled {
-        cfg.web_enabled = v;
-    }
-    if let Some(v) = body.web_host {
-        cfg.web_host = v;
-    }
-    if let Some(v) = body.web_port {
-        cfg.web_port = v;
-    }
-    if let Some(v) = body.web_auth_token {
-        cfg.web_auth_token = v;
-    }
-    if let Some(v) = body.web_max_inflight_per_session {
-        cfg.web_max_inflight_per_session = v;
-    }
-    if let Some(v) = body.web_max_requests_per_window {
-        cfg.web_max_requests_per_window = v;
-    }
-    if let Some(v) = body.web_rate_window_seconds {
-        cfg.web_rate_window_seconds = v;
-    }
-    if let Some(v) = body.web_run_history_limit {
-        cfg.web_run_history_limit = v;
-    }
-    if let Some(v) = body.web_session_idle_ttl_seconds {
-        cfg.web_session_idle_ttl_seconds = v;
-    }
-
-    if let Err(e) = cfg.post_deserialize() {
-        return Err((StatusCode::BAD_REQUEST, e.to_string()));
-    }
-
-    let path = config_path_for_save()?;
-    cfg.save_yaml(&path.to_string_lossy())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(Json(json!({
-        "ok": true,
-        "path": path,
-        "requires_restart": true
     })))
 }
 
@@ -782,74 +1073,17 @@ async fn resolve_chat_id_for_session_key(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-async fn api_sessions(
-    headers: HeaderMap,
-    State(state): State<WebState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-
-    let chats = call_blocking(state.app_state.db.clone(), |db| db.get_recent_chats(400))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let sessions = chats
-        .into_iter()
-        .map(|c| map_chat_to_session(&state.app_state.channel_registry, c))
-        .collect::<Vec<_>>();
-    Ok(Json(json!({ "ok": true, "sessions": sessions })))
-}
-
-async fn api_history(
-    headers: HeaderMap,
-    State(state): State<WebState>,
-    Query(query): Query<HistoryQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-
-    let session_key = normalize_session_key(query.session_key.as_deref());
-    let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
-
-    let mut messages = call_blocking(state.app_state.db.clone(), move |db| {
-        db.get_all_messages(chat_id)
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if let Some(limit) = query.limit {
-        if messages.len() > limit {
-            messages = messages[messages.len() - limit..].to_vec();
-        }
-    }
-
-    let items: Vec<HistoryItem> = messages
-        .into_iter()
-        .map(|m| HistoryItem {
-            id: m.id,
-            sender_name: m.sender_name,
-            content: m.content,
-            is_from_bot: m.is_from_bot,
-            timestamp: m.timestamp,
-        })
-        .collect();
-
-    Ok(Json(json!({
-        "ok": true,
-        "session_key": session_key,
-        "chat_id": chat_id,
-        "messages": items,
-    })))
-}
-
 async fn api_usage(
     headers: HeaderMap,
     State(state): State<WebState>,
     Query(query): Query<UsageQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
+    metrics_http_inc(&state).await;
+    require_scope(&state, &headers, AuthScope::Read).await?;
 
     let session_key = normalize_session_key(query.session_key.as_deref());
     let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
-    let report = build_usage_report(state.app_state.db.clone(), &state.app_state.config, chat_id)
+    let report = build_usage_report(state.app_state.db.clone(), chat_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let memory_observability = call_blocking(state.app_state.db.clone(), move |db| {
@@ -885,7 +1119,8 @@ async fn api_memory_observability(
     State(state): State<WebState>,
     Query(query): Query<MemoryObservabilityQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
+    metrics_http_inc(&state).await;
+    require_scope(&state, &headers, AuthScope::Read).await?;
 
     let scope = query
         .scope
@@ -980,7 +1215,8 @@ async fn api_send(
     State(state): State<WebState>,
     Json(body): Json<SendRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
+    metrics_http_inc(&state).await;
+    require_scope(&state, &headers, AuthScope::Write).await?;
     let start = Instant::now();
     let session_key = normalize_session_key(body.session_key.as_deref());
     if let Err((status, msg)) = state.request_hub.begin(&session_key, &state.limits).await {
@@ -995,6 +1231,10 @@ async fn api_send(
         return Err((status, msg));
     }
     let result = send_and_store_response(state.clone(), body).await;
+    if result.is_ok() {
+        metrics_llm_completion_inc(&state).await;
+    }
+    let _ = persist_metrics_snapshot(&state).await;
     state
         .request_hub
         .end_with_limits(&session_key, &state.limits)
@@ -1008,295 +1248,6 @@ async fn api_send(
         "Completed request"
     );
     result
-}
-
-async fn api_send_stream(
-    headers: HeaderMap,
-    State(state): State<WebState>,
-    Json(body): Json<SendRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-    let start = Instant::now();
-
-    let text = body.message.trim().to_string();
-    if text.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "message is required".into()));
-    }
-
-    let session_key = normalize_session_key(body.session_key.as_deref());
-    if let Err((status, msg)) = state.request_hub.begin(&session_key, &state.limits).await {
-        info!(
-            target: "web",
-            endpoint = "/api/send_stream",
-            session_key = %session_key,
-            status = status.as_u16(),
-            reason = %msg,
-            "Request rejected by limiter"
-        );
-        return Err((status, msg));
-    }
-
-    let run_id = uuid::Uuid::new_v4().to_string();
-    state.run_hub.create(&run_id).await;
-    let state_for_task = state.clone();
-    let run_id_for_task = run_id.clone();
-    let lock = state
-        .session_hub
-        .lock_for(&session_key, &state.limits)
-        .await;
-    let limits = state.limits.clone();
-    let session_key_for_release = session_key.clone();
-    info!(
-        target: "web",
-        endpoint = "/api/send_stream",
-        session_key = %session_key,
-        run_id = %run_id,
-        latency_ms = start.elapsed().as_millis(),
-        "Accepted stream run"
-    );
-
-    tokio::spawn(async move {
-        let run_start = Instant::now();
-        let _guard = lock.lock().await;
-        state_for_task
-            .run_hub
-            .publish(
-                &run_id_for_task,
-                "status",
-                json!({"message": "running"}).to_string(),
-                limits.run_history_limit,
-            )
-            .await;
-
-        let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
-        let run_hub = state_for_task.run_hub.clone();
-        let run_id_for_events = run_id_for_task.clone();
-        let run_history_limit = limits.run_history_limit;
-        let forward = tokio::spawn(async move {
-            while let Some(evt) = evt_rx.recv().await {
-                match evt {
-                    AgentEvent::Iteration { iteration } => {
-                        run_hub
-                            .publish(
-                                &run_id_for_events,
-                                "status",
-                                json!({"message": format!("iteration {iteration}")}).to_string(),
-                                run_history_limit,
-                            )
-                            .await;
-                    }
-                    AgentEvent::ToolStart { name } => {
-                        run_hub
-                            .publish(
-                                &run_id_for_events,
-                                "tool_start",
-                                json!({"name": name}).to_string(),
-                                run_history_limit,
-                            )
-                            .await;
-                    }
-                    AgentEvent::ToolResult {
-                        name,
-                        is_error,
-                        preview,
-                        duration_ms,
-                        status_code,
-                        bytes,
-                        error_type,
-                    } => {
-                        run_hub
-                            .publish(
-                                &run_id_for_events,
-                                "tool_result",
-                                json!({
-                                    "name": name,
-                                    "is_error": is_error,
-                                    "preview": preview,
-                                    "duration_ms": duration_ms,
-                                    "status_code": status_code,
-                                    "bytes": bytes,
-                                    "error_type": error_type
-                                })
-                                .to_string(),
-                                run_history_limit,
-                            )
-                            .await;
-                    }
-                    AgentEvent::TextDelta { delta } => {
-                        run_hub
-                            .publish(
-                                &run_id_for_events,
-                                "delta",
-                                json!({"delta": delta}).to_string(),
-                                run_history_limit,
-                            )
-                            .await;
-                    }
-                    AgentEvent::FinalResponse { .. } => {}
-                }
-            }
-        });
-
-        match send_and_store_response_with_events(state_for_task.clone(), body, Some(&evt_tx)).await
-        {
-            Ok(resp) => {
-                let response_text = resp
-                    .0
-                    .get("response")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-
-                state_for_task
-                    .run_hub
-                    .publish(
-                        &run_id_for_task,
-                        "done",
-                        json!({"response": response_text}).to_string(),
-                        limits.run_history_limit,
-                    )
-                    .await;
-            }
-            Err((_, err_msg)) => {
-                state_for_task
-                    .run_hub
-                    .publish(
-                        &run_id_for_task,
-                        "error",
-                        json!({"error": err_msg}).to_string(),
-                        limits.run_history_limit,
-                    )
-                    .await;
-            }
-        }
-        drop(evt_tx);
-        let _ = forward.await;
-        state_for_task
-            .request_hub
-            .end_with_limits(&session_key_for_release, &limits)
-            .await;
-        info!(
-            target: "web",
-            endpoint = "/api/send_stream",
-            session_key = %session_key_for_release,
-            run_id = %run_id_for_task,
-            latency_ms = run_start.elapsed().as_millis(),
-            "Stream run finished"
-        );
-
-        state_for_task
-            .run_hub
-            .remove_later(run_id_for_task, 300)
-            .await;
-    });
-
-    Ok(Json(json!({
-        "ok": true,
-        "run_id": run_id,
-    })))
-}
-
-async fn api_stream(
-    headers: HeaderMap,
-    State(state): State<WebState>,
-    Query(query): Query<StreamQuery>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-    let start = Instant::now();
-
-    let Some((mut rx, replay, done, replay_truncated, oldest_event_id)) = state
-        .run_hub
-        .subscribe_with_replay(&query.run_id, query.last_event_id)
-        .await
-    else {
-        return Err((StatusCode::NOT_FOUND, "run not found".into()));
-    };
-    info!(
-        target: "web",
-        endpoint = "/api/stream",
-        run_id = %query.run_id,
-        last_event_id = ?query.last_event_id,
-        replay_count = replay.len(),
-        replay_truncated = replay_truncated,
-        oldest_event_id = ?oldest_event_id,
-        latency_ms = start.elapsed().as_millis(),
-        "Stream subscription established"
-    );
-
-    let stream = async_stream::stream! {
-        let meta = Event::default().event("replay_meta").data(
-            json!({
-                "replay_truncated": replay_truncated,
-                "oldest_event_id": oldest_event_id,
-                "requested_last_event_id": query.last_event_id,
-            })
-            .to_string()
-        );
-        yield Ok::<Event, std::convert::Infallible>(meta);
-
-        let mut finished = false;
-        for evt in replay {
-            let is_done = evt.event == "done" || evt.event == "error";
-            let event = Event::default()
-                .id(evt.id.to_string())
-                .event(evt.event)
-                .data(evt.data);
-            yield Ok::<Event, std::convert::Infallible>(event);
-            if is_done {
-                finished = true;
-                break;
-            }
-        }
-
-        if finished || done {
-            return;
-        }
-
-        loop {
-            match rx.recv().await {
-                Ok(evt) => {
-                    let done = evt.event == "done" || evt.event == "error";
-                    let event = Event::default()
-                        .id(evt.id.to_string())
-                        .event(evt.event)
-                        .data(evt.data);
-                    yield Ok::<Event, std::convert::Infallible>(event);
-                    if done {
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    break;
-                }
-            }
-        }
-    };
-
-    Ok(Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(std::time::Duration::from_secs(15))
-            .text("keepalive"),
-    ))
-}
-
-async fn api_run_status(
-    headers: HeaderMap,
-    State(state): State<WebState>,
-    Query(query): Query<RunStatusQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-    let Some((done, last_event_id)) = state.run_hub.status(&query.run_id).await else {
-        return Err((StatusCode::NOT_FOUND, "run not found".into()));
-    };
-    Ok(Json(json!({
-        "ok": true,
-        "run_id": query.run_id,
-        "done": done,
-        "last_event_id": last_event_id,
-    })))
 }
 
 async fn send_and_store_response(
@@ -1346,6 +1297,12 @@ async fn send_and_store_response_with_events(
         .filter(|s| !s.is_empty())
         .unwrap_or("web-user")
         .to_string();
+
+    let before_usage = call_blocking(state.app_state.db.clone(), move |db| {
+        db.get_llm_usage_summary(Some(chat_id))
+    })
+    .await
+    .ok();
 
     if let Some(explicit_chat_id) = parsed_chat_id {
         let is_web = get_chat_routing(
@@ -1408,6 +1365,17 @@ async fn send_and_store_response_with_events(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
 
+    let after_usage = call_blocking(state.app_state.db.clone(), move |db| {
+        db.get_llm_usage_summary(Some(chat_id))
+    })
+    .await
+    .ok();
+    if let (Some(before), Some(after)) = (before_usage, after_usage) {
+        let mut m = state.metrics.lock().await;
+        m.llm_input_tokens += (after.input_tokens - before.input_tokens).max(0);
+        m.llm_output_tokens += (after.output_tokens - before.output_tokens).max(0);
+    }
+
     deliver_and_store_bot_message(
         &state.app_state.channel_registry,
         state.app_state.db.clone(),
@@ -1426,80 +1394,51 @@ async fn send_and_store_response_with_events(
     })))
 }
 
-async fn api_reset(
+async fn api_audit_logs(
     headers: HeaderMap,
     State(state): State<WebState>,
-    Json(body): Json<ResetRequest>,
+    Query(query): Query<AuditQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-
-    let session_key = normalize_session_key(body.session_key.as_deref());
-    let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
-
-    let is_web = get_chat_routing(
-        &state.app_state.channel_registry,
-        state.app_state.db.clone(),
-        chat_id,
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-    .map(|r| r.channel_name == "web")
-    .unwrap_or(false);
-
-    let deleted = if is_web {
-        let deleted = call_blocking(state.app_state.db.clone(), move |db| {
-            db.delete_chat_data(chat_id)
-        })
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        // Keep the web session entry in the session list after clearing context.
-        let session_key_for_chat = session_key.clone();
-        call_blocking(state.app_state.db.clone(), move |db| {
-            db.upsert_chat(chat_id, Some(&session_key_for_chat), "web")
-        })
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        deleted
-    } else {
-        call_blocking(state.app_state.db.clone(), move |db| {
-            db.delete_session(chat_id)
-        })
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    };
-
-    Ok(Json(json!({ "ok": true, "deleted": deleted })))
-}
-
-async fn api_delete_session(
-    headers: HeaderMap,
-    State(state): State<WebState>,
-    Json(body): Json<ResetRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_auth(&headers, state.auth_token.as_deref())?;
-
-    let session_key = normalize_session_key(body.session_key.as_deref());
-    let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
-
-    let deleted = call_blocking(state.app_state.db.clone(), move |db| {
-        db.delete_chat_data(chat_id)
+    metrics_http_inc(&state).await;
+    require_scope(&state, &headers, AuthScope::Admin).await?;
+    let limit = query.limit.unwrap_or(200).clamp(1, 2000);
+    let kind = query.kind.map(|k| k.trim().to_string());
+    let rows = call_blocking(state.app_state.db.clone(), move |db| {
+        db.list_audit_logs(kind.as_deref(), limit)
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(Json(json!({ "ok": true, "deleted": deleted })))
+    let logs = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "kind": r.kind,
+                "actor": r.actor,
+                "action": r.action,
+                "target": r.target,
+                "status": r.status,
+                "detail": r.detail,
+                "created_at": r.created_at
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({"ok": true, "logs": logs})))
 }
 
 pub async fn start_web_server(state: Arc<AppState>) {
     let limits = WebLimits::from_config(&state.config);
     let web_state = WebState {
-        auth_token: state.config.web_auth_token.clone(),
+        legacy_auth_token: state.config.web_auth_token.clone(),
         app_state: state.clone(),
         run_hub: RunHub::default(),
         session_hub: SessionHub::default(),
         request_hub: RequestHub::default(),
+        auth_hub: AuthHub::default(),
+        metrics: Arc::new(Mutex::new(WebMetrics::default())),
+        otlp: OtlpExporter::from_config(&state.config),
+        otlp_last_export: Arc::new(Mutex::new(None)),
+        otlp_export_interval: otlp_export_interval(&state.config),
         limits,
     };
 
@@ -1561,31 +1500,57 @@ fn build_router(web_state: WebState) -> Router {
         .route("/icon.png", get(icon_file))
         .route("/favicon.ico", get(favicon_file))
         .route("/api/health", get(api_health))
-        .route("/api/config", get(api_get_config).put(api_update_config))
-        .route("/api/sessions", get(api_sessions))
-        .route("/api/history", get(api_history))
+        .route("/api/auth/status", get(auth::api_auth_status))
+        .route("/api/auth/password", post(auth::api_auth_set_password))
+        .route("/api/auth/login", post(auth::api_auth_login))
+        .route("/api/auth/logout", post(auth::api_auth_logout))
+        .route(
+            "/api/auth/api_keys",
+            get(auth::api_auth_api_keys).post(auth::api_auth_create_api_key),
+        )
+        .route(
+            "/api/auth/api_keys/:id",
+            axum::routing::delete(auth::api_auth_revoke_api_key),
+        )
+        .route(
+            "/api/auth/api_keys/:id/rotate",
+            post(auth::api_auth_rotate_api_key),
+        )
+        .route(
+            "/api/config",
+            get(config::api_get_config).put(config::api_update_config),
+        )
+        .route("/api/config/self_check", get(config::api_config_self_check))
+        .route("/api/sessions", get(sessions::api_sessions))
+        .route("/api/sessions/tree", get(sessions::api_sessions_tree))
+        .route("/api/sessions/fork", post(sessions::api_sessions_fork))
+        .route("/api/audit", get(api_audit_logs))
+        .route("/api/history", get(sessions::api_history))
         .route("/api/usage", get(api_usage))
         .route("/api/memory_observability", get(api_memory_observability))
+        .route("/api/metrics", get(metrics::api_metrics))
+        .route("/api/metrics/summary", get(metrics::api_metrics_summary))
+        .route("/api/metrics/history", get(metrics::api_metrics_history))
         .route("/api/send", post(api_send))
-        .route("/api/send_stream", post(api_send_stream))
-        .route("/api/stream", get(api_stream))
-        .route("/api/run_status", get(api_run_status))
-        .route("/api/reset", post(api_reset))
-        .route("/api/delete_session", post(api_delete_session))
+        .route("/api/send_stream", post(stream::api_send_stream))
+        .route("/api/stream", get(stream::api_stream))
+        .route("/api/run_status", get(stream::api_run_status))
+        .route("/api/reset", post(sessions::api_reset))
+        .route("/api/delete_session", post(sessions::api_delete_session))
         .with_state(web_state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel_adapter::ChannelRegistry;
     use crate::config::{Config, WorkingDirIsolation};
-    use crate::db::call_blocking;
     use crate::llm::LlmProvider;
     use crate::{db::Database, memory::MemoryManager, skills::SkillManager, tools::ToolRegistry};
     use crate::{error::MicroClawError, llm_types::ResponseContentBlock};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use microclaw_channels::channel_adapter::ChannelRegistry;
+    use microclaw_storage::db::call_blocking;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
@@ -1618,11 +1583,14 @@ mod tests {
         async fn send_message(
             &self,
             _system: &str,
-            _messages: Vec<crate::llm_types::Message>,
-            _tools: Option<Vec<crate::llm_types::ToolDefinition>>,
-        ) -> Result<crate::llm_types::MessagesResponse, crate::error::MicroClawError> {
-            Ok(crate::llm_types::MessagesResponse {
-                content: vec![crate::llm_types::ResponseContentBlock::Text {
+            _messages: Vec<microclaw_core::llm_types::Message>,
+            _tools: Option<Vec<microclaw_core::llm_types::ToolDefinition>>,
+        ) -> Result<
+            microclaw_core::llm_types::MessagesResponse,
+            microclaw_core::error::MicroClawError,
+        > {
+            Ok(microclaw_core::llm_types::MessagesResponse {
+                content: vec![microclaw_core::llm_types::ResponseContentBlock::Text {
                     text: "hello from llm".into(),
                 }],
                 stop_reason: Some("end_turn".into()),
@@ -1633,10 +1601,13 @@ mod tests {
         async fn send_message_stream(
             &self,
             _system: &str,
-            _messages: Vec<crate::llm_types::Message>,
-            _tools: Option<Vec<crate::llm_types::ToolDefinition>>,
+            _messages: Vec<microclaw_core::llm_types::Message>,
+            _tools: Option<Vec<microclaw_core::llm_types::ToolDefinition>>,
             text_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
-        ) -> Result<crate::llm_types::MessagesResponse, crate::error::MicroClawError> {
+        ) -> Result<
+            microclaw_core::llm_types::MessagesResponse,
+            microclaw_core::error::MicroClawError,
+        > {
             if let Some(tx) = text_tx {
                 let _ = tx.send("hello ".into());
                 let _ = tx.send("from llm".into());
@@ -1654,11 +1625,11 @@ mod tests {
         async fn send_message(
             &self,
             _system: &str,
-            _messages: Vec<crate::llm_types::Message>,
-            _tools: Option<Vec<crate::llm_types::ToolDefinition>>,
-        ) -> Result<crate::llm_types::MessagesResponse, MicroClawError> {
+            _messages: Vec<microclaw_core::llm_types::Message>,
+            _tools: Option<Vec<microclaw_core::llm_types::ToolDefinition>>,
+        ) -> Result<microclaw_core::llm_types::MessagesResponse, MicroClawError> {
             tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
-            Ok(crate::llm_types::MessagesResponse {
+            Ok(microclaw_core::llm_types::MessagesResponse {
                 content: vec![ResponseContentBlock::Text {
                     text: "slow".into(),
                 }],
@@ -1677,12 +1648,12 @@ mod tests {
         async fn send_message(
             &self,
             _system: &str,
-            _messages: Vec<crate::llm_types::Message>,
-            _tools: Option<Vec<crate::llm_types::ToolDefinition>>,
-        ) -> Result<crate::llm_types::MessagesResponse, MicroClawError> {
+            _messages: Vec<microclaw_core::llm_types::Message>,
+            _tools: Option<Vec<microclaw_core::llm_types::ToolDefinition>>,
+        ) -> Result<microclaw_core::llm_types::MessagesResponse, MicroClawError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
-                return Ok(crate::llm_types::MessagesResponse {
+                return Ok(microclaw_core::llm_types::MessagesResponse {
                     content: vec![ResponseContentBlock::ToolUse {
                         id: "tool_1".into(),
                         name: "glob".into(),
@@ -1692,7 +1663,7 @@ mod tests {
                     usage: None,
                 });
             }
-            Ok(crate::llm_types::MessagesResponse {
+            Ok(microclaw_core::llm_types::MessagesResponse {
                 content: vec![ResponseContentBlock::Text {
                     text: "after tool".into(),
                 }],
@@ -1702,8 +1673,8 @@ mod tests {
         }
     }
 
-    fn test_state(llm: Box<dyn LlmProvider>) -> Arc<AppState> {
-        let mut cfg = Config {
+    fn test_config_template() -> Config {
+        Config {
             telegram_bot_token: "tok".into(),
             bot_username: "bot".into(),
             llm_provider: "anthropic".into(),
@@ -1719,6 +1690,7 @@ mod tests {
             data_dir: "./microclaw.data".into(),
             working_dir: "./tmp".into(),
             working_dir_isolation: WorkingDirIsolation::Shared,
+            sandbox: crate::config::SandboxConfig::default(),
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
@@ -1752,7 +1724,10 @@ mod tests {
             clawhub_agent_tools_enabled: true,
             clawhub_skip_security_warnings: false,
             channels: std::collections::HashMap::new(),
-        };
+        }
+    }
+
+    fn test_state_with_config(llm: Box<dyn LlmProvider>, mut cfg: Config) -> Arc<AppState> {
         let dir = std::env::temp_dir().join(format!("microclaw_webtest_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         cfg.data_dir = dir.to_string_lossy().to_string();
@@ -1769,6 +1744,7 @@ mod tests {
             db: db.clone(),
             memory: MemoryManager::new(&runtime_dir),
             skills: SkillManager::from_skills_dir(&cfg.skills_data_dir()),
+            hooks: Arc::new(crate::hooks::HookManager::for_tests()),
             llm,
             embedding: None,
             tools: ToolRegistry::new(&cfg, channel_registry, db),
@@ -1776,20 +1752,36 @@ mod tests {
         Arc::new(state)
     }
 
+    fn test_state(llm: Box<dyn LlmProvider>) -> Arc<AppState> {
+        test_state_with_config(llm, test_config_template())
+    }
+
+    fn test_web_state_from_app_state(
+        state: Arc<AppState>,
+        auth_token: Option<String>,
+        limits: WebLimits,
+    ) -> WebState {
+        WebState {
+            app_state: state,
+            legacy_auth_token: auth_token,
+            run_hub: RunHub::default(),
+            session_hub: SessionHub::default(),
+            request_hub: RequestHub::default(),
+            auth_hub: AuthHub::default(),
+            metrics: Arc::new(Mutex::new(WebMetrics::default())),
+            otlp: None,
+            otlp_last_export: Arc::new(Mutex::new(None)),
+            otlp_export_interval: Duration::from_secs(1),
+            limits,
+        }
+    }
+
     fn test_web_state(
         llm: Box<dyn LlmProvider>,
         auth_token: Option<String>,
         limits: WebLimits,
     ) -> WebState {
-        let state = test_state(llm);
-        WebState {
-            app_state: state,
-            auth_token,
-            run_hub: RunHub::default(),
-            session_hub: SessionHub::default(),
-            request_hub: RequestHub::default(),
-            limits,
-        }
+        test_web_state_from_app_state(test_state(llm), auth_token, limits)
     }
 
     #[tokio::test]
@@ -2205,5 +2197,296 @@ mod tests {
 
         assert_eq!(routing.map(|r| r.channel_name), Some("web".to_string()));
         assert_eq!(external.as_deref(), Some("scoped-main"));
+    }
+
+    #[tokio::test]
+    async fn test_sessions_fork_copies_messages_and_meta() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let app = build_router(web_state.clone());
+
+        let seed_req = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"main","sender_name":"u","message":"seed"}"#,
+            ))
+            .unwrap();
+        let seed_resp = app.clone().oneshot(seed_req).await.unwrap();
+        assert_eq!(seed_resp.status(), StatusCode::OK);
+
+        let fork_req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions/fork")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"source_session_key":"main","target_session_key":"main-fork","fork_point":1}"#,
+            ))
+            .unwrap();
+        let fork_resp = app.clone().oneshot(fork_req).await.unwrap();
+        assert_eq!(fork_resp.status(), StatusCode::OK);
+        let fork_body = axum::body::to_bytes(fork_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let fork_json: serde_json::Value = serde_json::from_slice(&fork_body).unwrap();
+        let target_chat_id = fork_json
+            .get("target_chat_id")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
+        assert!(target_chat_id > 0);
+
+        let hist_req = Request::builder()
+            .method("GET")
+            .uri("/api/history?session_key=main-fork")
+            .body(Body::empty())
+            .unwrap();
+        let hist_resp = app.clone().oneshot(hist_req).await.unwrap();
+        assert_eq!(hist_resp.status(), StatusCode::OK);
+        let hist_body = axum::body::to_bytes(hist_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let hist_json: serde_json::Value = serde_json::from_slice(&hist_body).unwrap();
+        let count = hist_json
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .map(|v| v.len())
+            .unwrap_or(0);
+        assert_eq!(count, 1);
+
+        let db = web_state.app_state.db.clone();
+        let meta = call_blocking(db, move |d| d.load_session_meta(target_chat_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.2.as_deref(), Some("main"));
+        assert_eq!(meta.3, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoints_return_data() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let app = build_router(web_state);
+
+        let send_req = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"metrics-main","sender_name":"u","message":"hello"}"#,
+            ))
+            .unwrap();
+        let send_resp = app.clone().oneshot(send_req).await.unwrap();
+        assert_eq!(send_resp.status(), StatusCode::OK);
+
+        let metrics_req = Request::builder()
+            .method("GET")
+            .uri("/api/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let metrics_resp = app.clone().oneshot(metrics_req).await.unwrap();
+        assert_eq!(metrics_resp.status(), StatusCode::OK);
+        let metrics_body = axum::body::to_bytes(metrics_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let metrics_json: serde_json::Value = serde_json::from_slice(&metrics_body).unwrap();
+        assert!(
+            metrics_json
+                .get("metrics")
+                .and_then(|m| m.get("http_requests"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                > 0
+        );
+
+        let history_req = Request::builder()
+            .method("GET")
+            .uri("/api/metrics/history?minutes=60")
+            .body(Body::empty())
+            .unwrap();
+        let history_resp = app.clone().oneshot(history_req).await.unwrap();
+        assert_eq!(history_resp.status(), StatusCode::OK);
+        let history_body = axum::body::to_bytes(history_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let history_json: serde_json::Value = serde_json::from_slice(&history_body).unwrap();
+        assert!(history_json
+            .get("points")
+            .and_then(|v| v.as_array())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_config_self_check_returns_warnings() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let app = build_router(web_state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/config/self_check")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert!(
+            json.get("warning_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                >= 1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_config_self_check_detects_otlp_missing_endpoint() {
+        let mut cfg = test_config_template();
+        cfg.channels.insert(
+            "observability".to_string(),
+            serde_yaml::to_value(serde_json::json!({
+                "otlp_enabled": true,
+                "otlp_retry_max_attempts": 1
+            }))
+            .unwrap(),
+        );
+        let state = test_state_with_config(Box::new(DummyLlm), cfg);
+        let web_state = test_web_state_from_app_state(state, None, WebLimits::default());
+        let app = build_router(web_state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/config/self_check")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let warnings = json
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let has_missing_endpoint = warnings.iter().any(|w| {
+            w.get("code").and_then(|v| v.as_str()) == Some("otlp_enabled_without_endpoint")
+        });
+        let has_low_retry = warnings
+            .iter()
+            .any(|w| w.get("code").and_then(|v| v.as_str()) == Some("otlp_retry_attempts_too_low"));
+        assert!(has_missing_endpoint);
+        assert!(has_low_retry);
+    }
+
+    #[tokio::test]
+    async fn test_sessions_tree_returns_fork_metadata() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let app = build_router(web_state.clone());
+
+        let seed_req = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"tree-main","sender_name":"u","message":"seed"}"#,
+            ))
+            .unwrap();
+        let seed_resp = app.clone().oneshot(seed_req).await.unwrap();
+        assert_eq!(seed_resp.status(), StatusCode::OK);
+
+        let fork_req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions/fork")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"source_session_key":"tree-main","target_session_key":"tree-branch","fork_point":1}"#,
+            ))
+            .unwrap();
+        let fork_resp = app.clone().oneshot(fork_req).await.unwrap();
+        assert_eq!(fork_resp.status(), StatusCode::OK);
+
+        let tree_req = Request::builder()
+            .method("GET")
+            .uri("/api/sessions/tree?limit=100")
+            .body(Body::empty())
+            .unwrap();
+        let tree_resp = app.oneshot(tree_req).await.unwrap();
+        assert_eq!(tree_resp.status(), StatusCode::OK);
+        let tree_body = axum::body::to_bytes(tree_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let tree_json: serde_json::Value = serde_json::from_slice(&tree_body).unwrap();
+        let nodes = tree_json
+            .get("nodes")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let found = nodes.iter().any(|n| {
+            n.get("parent_session_key").and_then(|v| v.as_str()) == Some("tree-main")
+                && n.get("fork_point").and_then(|v| v.as_i64()) == Some(1)
+        });
+        assert!(found);
+    }
+
+    #[tokio::test]
+    async fn test_cookie_write_requires_csrf_header() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let app = build_router(web_state.clone());
+        let hash = make_password_hash("passw0rd!");
+        let db = web_state.app_state.db.clone();
+        call_blocking(db, move |d| d.upsert_auth_password_hash(&hash))
+            .await
+            .unwrap();
+
+        let login_req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"password":"passw0rd!"}"#))
+            .unwrap();
+        let login_resp = app.clone().oneshot(login_req).await.unwrap();
+        assert_eq!(login_resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(login_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let session_id = json
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let csrf = json
+            .get("csrf_token")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let cookie_header = format!("mc_session={session_id}; mc_csrf={csrf}");
+        assert!(!session_id.is_empty());
+        assert!(!csrf.is_empty());
+
+        let reset_without_csrf = Request::builder()
+            .method("POST")
+            .uri("/api/reset")
+            .header("content-type", "application/json")
+            .header("cookie", &cookie_header)
+            .body(Body::from(r#"{"session_key":"main"}"#))
+            .unwrap();
+        let bad = app.clone().oneshot(reset_without_csrf).await.unwrap();
+        assert_eq!(bad.status(), StatusCode::FORBIDDEN);
+
+        let reset_with_csrf = Request::builder()
+            .method("POST")
+            .uri("/api/reset")
+            .header("content-type", "application/json")
+            .header("cookie", &cookie_header)
+            .header("x-csrf-token", csrf)
+            .body(Body::from(r#"{"session_key":"main"}"#))
+            .unwrap();
+        let ok = app.oneshot(reset_with_csrf).await.unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 }

@@ -182,7 +182,7 @@ main() {
   if [ -z "$asset_url" ]; then
     err "No prebuilt binary found for ${os}/${arch} in the latest GitHub release."
     err "Use a separate install method instead:"
-    err "  Homebrew (macOS): brew tap everettjf/tap && brew install microclaw"
+    err "  Homebrew (macOS): brew tap microclaw/tap && brew install microclaw"
     err "  Build from source: https://github.com/${REPO}"
     exit 1
   fi

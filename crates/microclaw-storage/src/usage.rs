@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use chrono::SecondsFormat;
 
-use crate::config::Config;
 use crate::db::{
     call_blocking, Database, LlmModelUsageSummary, LlmUsageSummary, MemoryObservabilitySummary,
 };
@@ -117,11 +116,7 @@ async fn query_memory_summary(
         .map_err(|e| e.to_string())
 }
 
-pub async fn build_usage_report(
-    db: Arc<Database>,
-    _config: &Config,
-    chat_id: i64,
-) -> Result<String, String> {
+pub async fn build_usage_report(db: Arc<Database>, chat_id: i64) -> Result<String, String> {
     let now = chrono::Utc::now();
     let since_24h = (now - chrono::Duration::hours(24)).to_rfc3339();
     let since_7d = (now - chrono::Duration::days(7)).to_rfc3339();

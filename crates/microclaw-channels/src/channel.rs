@@ -1,8 +1,18 @@
 use std::sync::Arc;
 
 use crate::channel_adapter::ChannelRegistry;
-use crate::db::{call_blocking, Database, StoredMessage};
-use crate::tools::auth_context_from_input;
+use microclaw_storage::db::{call_blocking, Database, StoredMessage};
+
+#[derive(Clone, Debug)]
+struct ToolAuthContext {
+    caller_chat_id: i64,
+}
+
+fn auth_context_from_input(input: &serde_json::Value) -> Option<ToolAuthContext> {
+    let ctx = input.get("__microclaw_auth")?;
+    let caller_chat_id = ctx.get("caller_chat_id")?.as_i64()?;
+    Some(ToolAuthContext { caller_chat_id })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationKind {

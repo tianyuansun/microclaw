@@ -57,6 +57,19 @@ type BackendMessage = {
   timestamp?: string
 }
 
+type ConfigWarning = {
+  code?: string
+  severity?: string
+  message?: string
+}
+
+type ConfigSelfCheck = {
+  ok?: boolean
+  risk_level?: 'none' | 'medium' | 'high' | string
+  warning_count?: number
+  warnings?: ConfigWarning[]
+}
+
 type ToolStartPayload = {
   tool_use_id: string
   name: string
@@ -679,6 +692,9 @@ function App() {
   const [configOpen, setConfigOpen] = useState<boolean>(false)
   const [config, setConfig] = useState<ConfigPayload | null>(null)
   const [configDraft, setConfigDraft] = useState<Record<string, unknown>>({})
+  const [configSelfCheck, setConfigSelfCheck] = useState<ConfigSelfCheck | null>(null)
+  const [configSelfCheckLoading, setConfigSelfCheckLoading] = useState<boolean>(false)
+  const [configSelfCheckError, setConfigSelfCheckError] = useState<string>('')
   const [saveStatus, setSaveStatus] = useState<string>('')
   const [usageOpen, setUsageOpen] = useState<boolean>(false)
   const [usageLoading, setUsageLoading] = useState<boolean>(false)
@@ -1003,8 +1019,18 @@ function App() {
 
   async function openConfig(): Promise<void> {
     setSaveStatus('')
-    const data = await api<{ config?: ConfigPayload }>('/api/config')
+    setConfigSelfCheckError('')
+    setConfigSelfCheckLoading(true)
+    const [data, selfCheck] = await Promise.all([
+      api<{ config?: ConfigPayload }>('/api/config'),
+      api<ConfigSelfCheck>('/api/config/self_check').catch((e) => {
+        setConfigSelfCheckError(e instanceof Error ? e.message : String(e))
+        return null
+      }),
+    ])
     setConfig(data.config || null)
+    setConfigSelfCheck(selfCheck)
+    setConfigSelfCheckLoading(false)
     setConfigDraft({
       llm_provider: data.config?.llm_provider || '',
       model: data.config?.model || defaultModelForProvider(String(data.config?.llm_provider || 'anthropic')),
@@ -1258,6 +1284,14 @@ function App() {
       }
 
       await api('/api/config', { method: 'PUT', body: JSON.stringify(payload) })
+      setConfigSelfCheckLoading(true)
+      setConfigSelfCheckError('')
+      const selfCheck = await api<ConfigSelfCheck>('/api/config/self_check').catch((e) => {
+        setConfigSelfCheckError(e instanceof Error ? e.message : String(e))
+        return null
+      })
+      setConfigSelfCheck(selfCheck)
+      setConfigSelfCheckLoading(false)
       setSaveStatus('Saved. Restart microclaw to apply changes.')
     } catch (e) {
       setSaveStatus(`Save failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -1404,6 +1438,32 @@ function App() {
             <Dialog.Description size="2" mb="3">
               Channel-first configuration. Save writes to microclaw.config.yaml. Restart is required.
             </Dialog.Description>
+            {configSelfCheck ? (
+              <Callout.Root
+                color={
+                  configSelfCheck.risk_level === 'high'
+                    ? 'red'
+                    : configSelfCheck.risk_level === 'medium'
+                      ? 'orange'
+                      : 'green'
+                }
+                size="1"
+                variant="soft"
+                className="mb-2"
+              >
+                <Callout.Text>
+                  Config self-check: risk={String(configSelfCheck.risk_level || 'none')}, warnings={Number(configSelfCheck.warning_count || 0)}.
+                </Callout.Text>
+              </Callout.Root>
+            ) : null}
+            {configSelfCheckLoading ? (
+              <Text size="1" color="gray" className="mb-2 block">Checking critical config risks...</Text>
+            ) : null}
+            {configSelfCheckError ? (
+              <Callout.Root color="red" size="1" variant="soft" className="mb-2">
+                <Callout.Text>Self-check failed: {configSelfCheckError}</Callout.Text>
+              </Callout.Root>
+            ) : null}
             <div className="mt-2 min-h-0 flex-1">
               {config ? (
                 <Tabs.Root defaultValue="general" orientation="vertical" className="h-full min-h-0">
@@ -1768,6 +1828,25 @@ function App() {
                             />
                           </ConfigFieldCard>
                         </div>
+                        {Array.isArray(configSelfCheck?.warnings) && configSelfCheck!.warnings!.length > 0 ? (
+                          <Card className="mt-4 p-3">
+                            <Text size="2" weight="bold">Critical Config Warnings</Text>
+                            <div className="mt-2 space-y-2">
+                              {configSelfCheck!.warnings!.map((w, idx) => (
+                                <Callout.Root
+                                  key={`${w.code || 'warning'}-${idx}`}
+                                  color={w.severity === 'high' ? 'red' : 'orange'}
+                                  size="1"
+                                  variant="soft"
+                                >
+                                  <Callout.Text>
+                                    [{String(w.severity || 'unknown')}] {String(w.code || 'warning')}: {String(w.message || '')}
+                                  </Callout.Text>
+                                </Callout.Root>
+                              ))}
+                            </div>
+                          </Card>
+                        ) : null}
                       </div>
                     </Tabs.Content>
 

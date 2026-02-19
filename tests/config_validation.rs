@@ -19,6 +19,7 @@ fn minimal_config() -> Config {
         data_dir: "./microclaw.data".into(),
         working_dir: "./tmp".into(),
         working_dir_isolation: WorkingDirIsolation::Chat,
+        sandbox: microclaw::config::SandboxConfig::default(),
         openai_api_key: None,
         timezone: "UTC".into(),
         allowed_groups: vec![],

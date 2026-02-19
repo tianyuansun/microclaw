@@ -15,9 +15,8 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 REPO_DIR="$ROOT_DIR"
-TAP_DIR_DEFAULT="$ROOT_DIR/../../github/homebrew-tap"
-TAP_DIR="${TAP_DIR:-$TAP_DIR_DEFAULT}"
-TAP_REPO="everettjf/homebrew-tap"
+TAP_DIR="$ROOT_DIR/tmp/homebrew-tap"
+TAP_REPO="microclaw/homebrew-tap"
 FORMULA_PATH="Formula/microclaw.rb"
 GITHUB_REPO="microclaw/microclaw"
 
@@ -25,6 +24,34 @@ require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "Missing required command: $1" >&2
     exit 1
+  fi
+}
+
+current_branch() {
+  local branch
+  branch="$(git symbolic-ref --quiet --short HEAD || true)"
+  if [ -z "$branch" ]; then
+    echo "Detached HEAD is not supported for release push" >&2
+    exit 1
+  fi
+  echo "$branch"
+}
+
+sync_rebase_and_push() {
+  local remote="${1:-origin}"
+  local branch
+  branch="$(current_branch)"
+
+  echo "Syncing $remote/$branch before push..."
+  git fetch "$remote" "$branch"
+  if git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+    git rebase "$remote/$branch"
+  fi
+
+  if git rev-parse --abbrev-ref --symbolic-full-name "@{u}" >/dev/null 2>&1; then
+    git push "$remote" "$branch"
+  else
+    git push -u "$remote" "$branch"
   fi
 }
 
@@ -162,6 +189,9 @@ else
 fi
 
 # --- Build release binary ---
+echo "Cleaning previous Rust build artifacts..."
+cargo clean
+
 echo "Building release binary..."
 cargo build --release
 
@@ -185,7 +215,7 @@ echo "SHA256: $SHA256"
 # --- Git commit + push ---
 git add .
 git commit -m "bump version to $NEW_VERSION"
-git push
+sync_rebase_and_push origin
 
 echo "Release commit pushed: $(git rev-parse HEAD)"
 

@@ -1,4 +1,4 @@
-use crate::text::floor_char_boundary;
+use microclaw_core::text::floor_char_boundary;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
@@ -32,7 +32,7 @@ fn find_case_insensitive(haystack: &str, needle: &str, from: usize) -> Option<us
 
     // Callers may pass byte offsets derived from external data; coerce to a valid
     // UTF-8 boundary to avoid panics when slicing.
-    let from = crate::text::floor_char_boundary(haystack, from);
+    let from = microclaw_core::text::floor_char_boundary(haystack, from);
     let h = haystack[from..].to_ascii_lowercase();
     let n = needle.to_ascii_lowercase();
     h.find(&n).map(|idx| from + idx)

@@ -23,35 +23,40 @@ Core capabilities:
 - Database: SQLite (rusqlite)
 - LLM runtime: provider abstraction with native Anthropic and OpenAI-compatible providers
 
-## Source index (`src/`)
+## Source index (`src/` + `crates/`)
 
+Main orchestration files in `src/`:
 - `main.rs`: CLI entry (`start`, `setup`, etc.)
 - `runtime.rs`: app wiring (`AppState`), provider/tool initialization, channel boot
 - `agent_engine.rs`: shared agent loop (`process_with_agent`), explicit-memory fast path, compaction, tool loop
+- `hooks.rs`: hooks discovery/runtime/CLI (`hooks list/info/enable/disable`)
 - `llm.rs`: provider implementations + stream handling + format translation
-- `llm_types.rs`: model/tool/message DTOs
-- `channels/telegram.rs`: Telegram adapter
-- `channels/discord.rs`: Discord adapter
-- `channels/delivery.rs`: cross-channel outbound delivery helpers
-- `channel.rs`: channel abstraction types
-- `web.rs`: Web API routes, stream APIs, config/usage endpoints
-- `db.rs`: SQLite schema, migrations, chat/session/task/memory persistence
-- `memory.rs`: file-memory manager (`runtime/groups/.../AGENTS.md`)
-- `memory_quality.rs`: explicit remember parser, normalization, quality rules, topic-key heuristics
+- `otlp.rs`: OTLP metrics exporter (HTTP/protobuf)
+- `web.rs`: Web API router, shared web state, stream APIs, config endpoints
+- `web/auth.rs`: auth handlers (session login/logout, password, API key lifecycle)
+- `web/config.rs`: config read/update + config self-check handlers
+- `web/sessions.rs`: session/history/reset/delete/fork/tree handlers
+- `web/metrics.rs`: metrics snapshot/history handlers
+- `web/stream.rs`: streaming send/status/SSE handlers
 - `scheduler.rs`: scheduled-task runner + memory reflector loop
-- `usage.rs`: token/cost/memory usage report assembly
-- `embedding.rs`: optional runtime embedding providers (for `sqlite-vec` flows)
 - `skills.rs`: skill discovery/activation
-- `builtin_skills.rs`: bundled skill materialization
 - `mcp.rs`: MCP server/tool integration
 - `gateway.rs`: event stream / request lifecycle infra
 - `setup.rs`: interactive setup wizard and provider presets
 - `doctor.rs`: environment diagnostics
-- `tools/`: built-in tool implementations and registry
+- `channels/*.rs`: concrete channel adapters (Telegram/Discord/Slack/Feishu)
+- `tools/*.rs`: built-in tool implementations and registry assembly
+
+Modularized crates in `crates/`:
+- `microclaw-core`: shared error/types/text (`error`, `llm_types`, `text`)
+- `microclaw-storage`: SQLite DB, memory domain, usage report assembly
+- `microclaw-tools`: tool runtime primitives, sandbox, path guards, web/todo helpers
+- `microclaw-channels`: channel abstractions (`channel`, `channel_adapter`, delivery boundary)
+- `microclaw-app`: app-level support modules (logging, builtin skills, transcribe)
 
 ## Tool system
 
-`src/tools/mod.rs` defines:
+`src/tools/mod.rs` assembles built-in tools, while shared runtime primitives live in `microclaw-tools::runtime`:
 - `Tool` trait (`name`, `definition`, `execute`)
 - `ToolRegistry` dispatch and auth context injection
 - risk/approval gate for high-risk tools in sensitive contexts
@@ -101,20 +106,51 @@ Surfaces:
 
 ## Database
 
-`db.rs` includes:
+`microclaw-storage::db` includes:
 - schema creation + schema-version migrations (`db_meta`, `schema_migrations`)
 - chat/message/session/task persistence
 - structured memory CRUD + archive/supersede
+- auth/session/api-key persistence (scopes, expiry, rotation)
+- audit log persistence (`audit_logs`)
 - usage and memory observability queries
+- metrics history persistence (`metrics_history`)
 
 ## Web/API
 
 `web.rs` routes include:
 - chat send/send_stream + SSE stream replay
-- sessions/history/reset/delete
-- config read/update
+- auth APIs (`/api/auth/*`) with session cookie + API key scopes
+- sessions/history/reset/delete/fork/tree
+- config read/update + self-check (`/api/config/self_check`)
+- audit query (`/api/audit`)
+- metrics APIs (`/api/metrics`, `/api/metrics/summary`, `/api/metrics/history`)
 - usage text report (`/api/usage`)
 - memory observability series (`/api/memory_observability`)
+
+## Hooks
+
+Hook assets and spec:
+- runtime hook dirs: `hooks/<name>/HOOK.md`
+- hook spec doc: `docs/hooks/HOOK.md`
+- sample hooks: `hooks/block-bash/`, `hooks/redact-tool-output/`
+
+Hook runtime supports:
+- events: `BeforeLLMCall`, `BeforeToolCall`, `AfterToolCall`
+- outcomes: `allow`, `block`, `modify` (structured fields only)
+
+## Observability Docs
+
+- metrics docs: `docs/observability/metrics.md`
+- operations runbook: `docs/operations/runbook.md`
+- PR/release checklist: `docs/releases/pr-release-checklist.md`
+- upgrade guide: `docs/releases/upgrade-guide.md`
+- regression/stability reports: `docs/reports/*.md`
+
+OTLP exporter supports bounded queue + retry backoff tuning:
+- `otlp_queue_capacity`
+- `otlp_retry_max_attempts`
+- `otlp_retry_base_ms`
+- `otlp_retry_max_ms`
 
 ## Build and test
 

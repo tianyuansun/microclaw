@@ -40,6 +40,7 @@ An agentic AI assistant for chat surfaces, inspired by [nanoclaw](https://github
 - [Release](#release)
 - [Setup](#setup)
 - [Configuration](#configuration)
+- [Docker Sandbox](#docker-sandbox)
 - [Platform behavior](#platform-behavior)
 - [Multi-chat permission model](#multi-chat-permission-model)
 - [Usage examples](#usage-examples)
@@ -79,7 +80,7 @@ Machine-readable output for support tickets:
 microclaw doctor --json
 ```
 
-Checks include PATH, shell runtime, Node/npm, `agent-browser`, PowerShell policy (Windows), and MCP command dependencies from `microclaw.data/mcp.json`.
+Checks include PATH, shell runtime, `agent-browser`, PowerShell policy (Windows), and MCP command dependencies from `microclaw.data/mcp.json`.
 
 ### Uninstall (script)
 
@@ -98,7 +99,7 @@ iwr https://microclaw.ai/uninstall.ps1 -UseBasicParsing | iex
 ### Homebrew (macOS)
 
 ```sh
-brew tap everettjf/tap
+brew tap microclaw/tap
 brew install microclaw
 ```
 
@@ -542,6 +543,8 @@ model: "claude-sonnet-4-20250514"
 data_dir: "./microclaw.data"
 working_dir: "./tmp"
 working_dir_isolation: "chat" # optional; defaults to "chat" if omitted
+sandbox:
+  mode: "off" # optional; default off. set "all" to run bash in docker sandbox
 max_document_size_mb: 100
 memory_token_budget: 1500
 timezone: "UTC"
@@ -600,6 +603,7 @@ All configuration is via `microclaw.config.yaml`:
 | `data_dir` | No | `./microclaw.data` | Data root (`runtime` data in `data_dir/runtime`, skills in `data_dir/skills`) |
 | `working_dir` | No | `./tmp` | Default working directory for tool operations; relative paths in `bash/read_file/write_file/edit_file/glob/grep` resolve from here |
 | `working_dir_isolation` | No | `chat` | Working directory isolation mode for `bash/read_file/write_file/edit_file/glob/grep`: `shared` uses `working_dir/shared`, `chat` isolates each chat under `working_dir/chat/<channel>/<chat_id>` |
+| `sandbox.mode` | No | `off` | Container sandbox mode for bash tool execution: `off` runs on host; `all` routes bash commands into docker containers |
 | `max_tokens` | No | `8192` | Max tokens per model response |
 | `max_tool_iterations` | No | `100` | Max tool-use loop iterations per message |
 | `max_document_size_mb` | No | `100` | Maximum allowed size for inbound Telegram documents; larger files are rejected with a hint message |
@@ -615,6 +619,40 @@ All configuration is via `microclaw.config.yaml`:
 | `embedding_dim` | No | provider default | Embedding vector dimension for sqlite-vec index initialization |
 
 `*` At least one channel must be enabled: `telegram_bot_token`, `discord_bot_token`, `channels.slack`, `channels.feishu`, or `web_enabled: true`.
+
+## Docker Sandbox
+
+Use this when you want `bash` tool calls to run in Docker containers instead of the host.
+
+Quick config:
+
+```yaml
+sandbox:
+  mode: "all"
+  backend: "auto"
+  image: "ubuntu:25.10"
+  container_prefix: "microclaw-sandbox"
+  no_network: true
+  require_runtime: false
+```
+
+How to test:
+
+```sh
+docker info
+docker run --rm ubuntu:25.10 echo ok
+microclaw start
+```
+
+Then ask the agent to run:
+- `cat /etc/os-release`
+- `pwd`
+
+Notes:
+- `sandbox.mode: "off"` (default) means `bash` runs on host.
+- If `mode: "all"` and Docker is unavailable:
+  - `require_runtime: false` -> fallback to host with warning.
+  - `require_runtime: true` -> command fails fast.
 
 ### Supported `llm_provider` values
 
@@ -692,33 +730,22 @@ Bot: Port 5433.
 ## Architecture
 
 ```
+crates/
+    microclaw-core/      # Shared error/types/text modules
+    microclaw-storage/   # SQLite DB + memory domain + usage reporting
+    microclaw-tools/     # Tool runtime primitives + sandbox + helper engines
+    microclaw-channels/  # Channel abstractions and routing boundary
+    microclaw-app/       # App-level support modules (logging, builtin skills, transcribe)
+
 src/
-    main.rs              # Entry point, CLI
-    config.rs            # Environment variable loading
-    error.rs             # Error types (thiserror)
-    telegram.rs          # Telegram handler, agentic tool-use loop, session resume, context compaction, typing indicator
-    llm.rs               # LLM provider abstraction (Anthropic + OpenAI-compatible)
-    llm_types.rs         # Canonical message/tool schema shared across LLM adapters
-    db.rs                # SQLite: messages, chats, scheduled_tasks, sessions
-    memory.rs            # AGENTS.md memory system
-    skills.rs            # Agent skills system (discovery, activation)
-    scheduler.rs         # Background task scheduler (60s polling loop)
-    tools/
-        mod.rs           # Tool trait + registry (22 tools)
-        bash.rs          # Shell execution
-        read_file.rs     # File reading
-        write_file.rs    # File writing
-        edit_file.rs     # Find/replace editing
-        glob.rs          # File pattern matching
-        grep.rs          # Regex content search
-        memory.rs        # Memory read/write tools
-        web_search.rs    # DuckDuckGo web search
-        web_fetch.rs     # URL fetching with HTML stripping
-        send_message.rs  # Mid-conversation messaging (text + channel attachments)
-        schedule.rs      # 5 scheduling tools (create/list/pause/resume/cancel)
-        sub_agent.rs     # Sub-agent with restricted tool registry
-        activate_skill.rs # Skill activation tool
-        todo.rs          # Plan & execute todo tools
+    main.rs              # CLI entry point
+    runtime.rs           # Runtime bootstrap + adapter startup
+    agent_engine.rs      # Channel-agnostic agent loop
+    llm.rs               # Provider abstraction (Anthropic/OpenAI-compatible/Codex)
+    channels/*.rs        # Concrete channel adapters (Telegram/Discord/Slack/Feishu)
+    tools/*.rs           # Built-in tool implementations + registry assembly
+    scheduler.rs         # Background scheduler and reflector loop
+    web.rs               # Web API + stream endpoints
 ```
 
 Key design decisions:

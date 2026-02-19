@@ -12,12 +12,12 @@ use crate::agent_engine::archive_conversation;
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::AgentEvent;
 use crate::agent_engine::AgentRequestContext;
-use crate::channel::ConversationKind;
-use crate::channel_adapter::ChannelAdapter;
-use crate::db::call_blocking;
-use crate::db::StoredMessage;
-use crate::llm_types::Message as LlmMessage;
 use crate::runtime::AppState;
+use microclaw_channels::channel::ConversationKind;
+use microclaw_channels::channel_adapter::ChannelAdapter;
+use microclaw_core::llm_types::Message as LlmMessage;
+use microclaw_storage::db::call_blocking;
+use microclaw_storage::db::StoredMessage;
 
 type WsSink = Arc<
     tokio::sync::Mutex<
@@ -29,8 +29,8 @@ type WsSink = Arc<
         >,
     >,
 >;
-use crate::text::split_text;
-use crate::usage::build_usage_report;
+use microclaw_core::text::split_text;
+use microclaw_storage::usage::build_usage_report;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -1354,7 +1354,7 @@ async fn handle_feishu_message(
         return;
     }
     if trimmed == "/usage" {
-        match build_usage_report(app_state.db.clone(), &app_state.config, chat_id).await {
+        match build_usage_report(app_state.db.clone(), chat_id).await {
             Ok(report) => {
                 let _ =
                     send_feishu_response(&http_client, base_url, &token, external_chat_id, &report)

@@ -1,18 +1,20 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::info;
 
 use crate::config::WorkingDirIsolation;
-use crate::llm_types::ToolDefinition;
-use crate::text::floor_char_boundary;
-use crate::tools::command_runner::{build_command, shell_command};
+use microclaw_core::llm_types::ToolDefinition;
+use microclaw_core::text::floor_char_boundary;
+use microclaw_tools::sandbox::{SandboxExecOptions, SandboxRouter};
 
 use super::{schema_object, Tool, ToolResult};
 
 pub struct BashTool {
     working_dir: PathBuf,
     working_dir_isolation: WorkingDirIsolation,
+    sandbox_router: Option<Arc<SandboxRouter>>,
 }
 
 impl BashTool {
@@ -27,7 +29,13 @@ impl BashTool {
         Self {
             working_dir: PathBuf::from(working_dir),
             working_dir_isolation,
+            sandbox_router: None,
         }
+    }
+
+    pub fn with_sandbox_router(mut self, router: Arc<SandboxRouter>) -> Self {
+        self.sandbox_router = Some(router);
+        self
     }
 }
 
@@ -78,29 +86,35 @@ impl Tool for BashTool {
 
         info!("Executing bash: {}", command);
 
-        let spec = shell_command(command);
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            build_command(&spec, Some(&working_dir)).output(),
-        )
-        .await;
+        let session_key = super::auth_context_from_input(&input)
+            .map(|auth| format!("{}-{}", auth.caller_channel, auth.caller_chat_id))
+            .unwrap_or_else(|| "shared".to_string());
+        let exec_opts = SandboxExecOptions {
+            timeout: std::time::Duration::from_secs(timeout_secs),
+            working_dir: Some(working_dir.clone()),
+        };
+        let result = if let Some(router) = &self.sandbox_router {
+            router.exec(&session_key, command, &exec_opts).await
+        } else {
+            microclaw_tools::sandbox::exec_host_command(command, &exec_opts).await
+        };
 
         match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let exit_code = output.status.code().unwrap_or(-1);
+            Ok(output) => {
+                let stdout = output.stdout;
+                let stderr = output.stderr;
+                let exit_code = output.exit_code;
 
                 let mut result_text = String::new();
                 if !stdout.is_empty() {
-                    result_text.push_str(&stdout);
+                    result_text.push_str(stdout.as_str());
                 }
                 if !stderr.is_empty() {
                     if !result_text.is_empty() {
                         result_text.push('\n');
                     }
                     result_text.push_str("STDERR:\n");
-                    result_text.push_str(&stderr);
+                    result_text.push_str(stderr.as_str());
                 }
                 if result_text.is_empty() {
                     result_text = format!("Command completed with exit code {exit_code}");
@@ -121,10 +135,16 @@ impl Tool for BashTool {
                         .with_error_type("process_exit")
                 }
             }
-            Ok(Err(e)) => ToolResult::error(format!("Failed to execute command: {e}"))
-                .with_error_type("spawn_error"),
-            Err(_) => ToolResult::error(format!("Command timed out after {timeout_secs} seconds"))
-                .with_error_type("timeout"),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("timed out after") {
+                    ToolResult::error(format!("Command timed out after {timeout_secs} seconds"))
+                        .with_error_type("timeout")
+                } else {
+                    ToolResult::error(format!("Failed to execute command: {e}"))
+                        .with_error_type("spawn_error")
+                }
+            }
         }
     }
 }

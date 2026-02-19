@@ -38,6 +38,7 @@
 - [发布](#发布)
 - [配置](#配置)
 - [配置项](#配置项)
+- [Docker 沙箱](#docker-沙箱)
 - [平台行为](#平台行为)
 - [多聊天权限模型](#多聊天权限模型)
 - [使用示例](#使用示例)
@@ -76,7 +77,7 @@ microclaw doctor
 microclaw doctor --json
 ```
 
-会检查：PATH、shell 运行时、Node/npm、`agent-browser`、Windows PowerShell 执行策略、以及 `microclaw.data/mcp.json` 里的 MCP 命令依赖。
+会检查：PATH、shell 运行时、`agent-browser`、Windows PowerShell 执行策略、以及 `microclaw.data/mcp.json` 里的 MCP 命令依赖。
 
 ### 卸载（脚本）
 
@@ -95,7 +96,7 @@ iwr https://microclaw.ai/uninstall.ps1 -UseBasicParsing | iex
 ### Homebrew (macOS)
 
 ```sh
-brew tap everettjf/tap
+brew tap microclaw/tap
 brew install microclaw
 ```
 
@@ -444,6 +445,9 @@ model: "claude-sonnet-4-20250514"
 # llm_base_url: "https://..."
 data_dir: "./microclaw.data"
 working_dir: "./tmp"
+working_dir_isolation: "chat" # 可选；默认 chat
+sandbox:
+  mode: "off" # 可选；默认关闭。设为 "all" 可让 bash 在 docker 沙箱执行
 max_document_size_mb: 100
 memory_token_budget: 1500
 timezone: "UTC"
@@ -502,6 +506,7 @@ microclaw gateway uninstall
 | `data_dir` | 否 | `./microclaw.data` | 数据根目录（运行时数据在 `data_dir/runtime`，技能在 `data_dir/skills`） |
 | `working_dir` | 否 | `./tmp` | 工具默认工作目录；`bash/read_file/write_file/edit_file/glob/grep` 的相对路径都以此为基准 |
 | `working_dir_isolation` | 否 | `chat` | 工具工作目录隔离模式：`shared` 使用 `working_dir/shared`，`chat` 使用 `working_dir/chat/<channel>/<chat_id>` |
+| `sandbox.mode` | 否 | `off` | `bash` 工具的容器沙箱模式：`off` 在宿主执行；`all` 通过 docker 容器执行 |
 | `max_tokens` | 否 | `8192` | 每次模型回复的最大 token |
 | `max_tool_iterations` | 否 | `100` | 每条消息的最大工具循环次数 |
 | `max_document_size_mb` | 否 | `100` | Telegram 入站文档允许的最大大小（MB）；超过会拒绝并提示 |
@@ -517,6 +522,40 @@ microclaw gateway uninstall
 | `embedding_dim` | 否 | provider 默认 | sqlite-vec 索引使用的向量维度 |
 
 `*` 需要至少启用一个渠道：`telegram_bot_token`、`discord_bot_token`、`channels.slack`、`channels.feishu`，或 `web_enabled: true`。
+
+## Docker 沙箱
+
+用于让 `bash` 工具在 Docker 容器执行，而不是在宿主执行。
+
+快速配置：
+
+```yaml
+sandbox:
+  mode: "all"
+  backend: "auto"
+  image: "ubuntu:25.10"
+  container_prefix: "microclaw-sandbox"
+  no_network: true
+  require_runtime: false
+```
+
+测试步骤：
+
+```sh
+docker info
+docker run --rm ubuntu:25.10 echo ok
+microclaw start
+```
+
+然后让 agent 执行：
+- `cat /etc/os-release`
+- `pwd`
+
+说明：
+- `sandbox.mode: "off"`（默认）时，`bash` 在宿主执行。
+- `mode: "all"` 但 Docker 不可用时：
+  - `require_runtime: false`：降级宿主执行并告警。
+  - `require_runtime: true`：直接报错，不降级。
 
 ### 支持的 `llm_provider` 值
 

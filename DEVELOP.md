@@ -14,60 +14,29 @@ cargo run -- start
 
 - Rust 1.70+ (2021 edition)
 - At least one enabled channel adapter (Telegram bot token from @BotFather, Discord bot token from Discord Developer Portal, Slack app/bot tokens, Feishu/Lark app credentials, or Web UI)
-- An Anthropic API key
+- A model provider API key (Anthropic or OpenAI-compatible)
 
 No other external dependencies. SQLite is bundled via `rusqlite`.
 
 ## Project structure
 
 ```
+crates/
+    microclaw-core/      # Shared error/types/text modules
+    microclaw-storage/   # SQLite + memory + usage reporting
+    microclaw-tools/     # Tool runtime primitives + sandbox
+    microclaw-channels/  # Channel abstraction boundary
+    microclaw-app/       # App support modules (logging/skills/transcribe)
+
 src/
-    main.rs              # Entry point. Parses CLI args, initializes subsystems, starts platform runtimes.
-    config.rs            # Config struct. All settings loaded from microclaw.config.yaml.
-    error.rs             # MicroClawError enum (thiserror). Centralized error types.
-    telegram.rs          # Core orchestration:
-                         #   - Telegram message handler
-                         #   - Agentic tool-use loop (process_with_claude)
-                         #   - Session resume (load/save full message state)
-                         #   - Context compaction (summarize old messages)
-                         #   - Continuous typing indicator
-                         #   - Group chat catch-up logic
-                         #   - Response splitting
-    discord.rs           # Discord message handler (serenity gateway), reuses process_with_claude
-    channels/slack.rs    # Slack adapter (Socket Mode WebSocket)
-    channels/feishu.rs   # Feishu/Lark adapter (WebSocket long connection or webhook)
-    claude.rs            # Anthropic Messages API client:
-                         #   - Request/response types with serde
-                         #   - HTTP calls with retry on 429
-                         #   - Content block enums (Text, ToolUse, ToolResult)
-    db.rs                # SQLite database:
-                         #   - Schema creation (chats, messages, scheduled_tasks, sessions)
-                         #   - Message storage and retrieval
-                         #   - Session save/load/delete for resume
-                         #   - Scheduled task CRUD
-                         #   - Catch-up query (messages since last bot response)
-    memory.rs            # MemoryManager:
-                         #   - Reads/writes CLAUDE.md files (global + per-chat)
-                         #   - Builds memory context for system prompts
-    scheduler.rs         # Background scheduler:
-                         #   - Spawns a tokio task that polls every 60s
-                         #   - Finds due tasks, runs agent loop, sends results
-                         #   - Computes next run time for cron tasks
-    tools/
-        mod.rs           # Tool trait, ToolRegistry, ToolResult.
-                         # Registry takes data_dir, Bot, Arc<Database>.
-        bash.rs          # Shell command execution (tokio::process::Command)
-        read_file.rs     # File reading with line numbers, offset/limit
-        write_file.rs    # File creation/overwrite, auto-creates directories
-        edit_file.rs     # Find/replace editing, validates uniqueness
-        glob.rs          # File pattern matching (glob crate)
-        grep.rs          # Recursive regex search, directory traversal
-        memory.rs        # read_memory / write_memory tools
-        web_search.rs    # DuckDuckGo HTML search, regex result parsing
-        web_fetch.rs     # URL fetching, HTML tag stripping, 20KB limit
-        send_message.rs  # Mid-conversation messaging (Telegram/Discord)
-        schedule.rs      # 5 scheduling tools (create/list/pause/resume/cancel)
-        sub_agent.rs     # Sub-agent tool with restricted tool registry (9 tools)
+    main.rs              # CLI entrypoint
+    runtime.rs           # Runtime bootstrap + adapter startup
+    agent_engine.rs      # Shared agent loop (process_with_agent)
+    llm.rs               # Provider adapters (Anthropic/OpenAI-compatible/Codex)
+    web.rs               # Web API + stream endpoints
+    scheduler.rs         # Scheduler + memory reflector loops
+    channels/*.rs        # Concrete adapters (Telegram/Discord/Slack/Feishu)
+    tools/*.rs           # Built-in tools + registry assembly
 ```
 
 ## Architecture overview
@@ -99,12 +68,12 @@ Platform message (via adapter)
        |
        v
     Compact if needed (messages > max_session_messages):
-       - Summarize old messages via Claude
+       - Summarize old messages via configured model provider
        - Keep recent messages verbatim
        |
        v
     Agentic loop (up to max_tool_iterations):
-       1. Call Claude API with messages + tool definitions
+       1. Call provider API with messages + tool definitions
        2. If stop_reason == "tool_use" -> execute tools -> append results -> loop
        3. If stop_reason == "end_turn" -> extract text -> return
        |
@@ -121,18 +90,18 @@ Platform message (via adapter)
     Store bot response in SQLite
 ```
 
-The same core loop is reused across adapters. Adding a new platform should primarily require a new ingress/egress adapter that maps platform events into the shared `process_with_claude` flow.
+The same core loop is reused across adapters. Adding a new platform should primarily require a new ingress/egress adapter that maps platform events into the shared `process_with_agent` flow.
 
 ### Key types
 
 | Type | Location | Description |
 |------|----------|-------------|
-| `AppState` | `telegram.rs` | Shared state: config, bot, db, memory, claude client, tool registry |
-| `Database` | `db.rs` | SQLite wrapper with `Mutex<Connection>` |
+| `AppState` | `runtime.rs` | Shared runtime state for all adapters |
+| `Database` | `microclaw_storage::db` | SQLite wrapper with `Mutex<Connection>` |
 | `ToolRegistry` | `tools/mod.rs` | Holds all `Box<dyn Tool>`, dispatches by name |
-| `Tool` trait | `tools/mod.rs` | `name()`, `definition()`, `execute()` |
-| `ClaudeClient` | `claude.rs` | HTTP client for Anthropic API |
-| `MemoryManager` | `memory.rs` | CLAUDE.md file reader/writer |
+| `Tool` trait | `microclaw_tools::runtime` | `name()`, `definition()`, `execute()` |
+| `LlmProvider` | `llm.rs` | Provider abstraction for Anthropic and OpenAI-compatible APIs |
+| `MemoryManager` | `memory.rs` | AGENTS.md file memory reader/writer |
 
 ### Shared state
 
@@ -145,7 +114,7 @@ The same core loop is reused across adapters. Adding a new platform should prima
 ### Multi-chat permission model
 
 - `control_chat_ids` in `microclaw.config.yaml` defines privileged chats.
-- Tool execution receives trusted caller context from `process_with_claude` (not from model-provided args).
+- Tool execution receives trusted caller context from `process_with_agent` (not from model-provided args).
 - Non-control chats can only operate on their own `chat_id`.
 - Control chats can perform cross-chat actions.
 - `write_memory` with `scope: "global"` is restricted to control chats.
@@ -210,8 +179,8 @@ The same core loop is reused across adapters. Adding a new platform should prima
 ```rust
 use async_trait::async_trait;
 use serde_json::json;
-use super::{schema_object, Tool, ToolResult};
-use crate::claude::ToolDefinition;
+use crate::tools::{schema_object, Tool, ToolResult};
+use microclaw_core::llm_types::ToolDefinition;
 
 pub struct MyTool;
 
@@ -278,12 +247,12 @@ Box::new(my_tool::MyTool::new(db.clone())),
 The core agent flow is already shared. New platform support should be implemented as an adapter around that core:
 
 1. Add a new runtime module (for example `src/<platform>.rs`) that listens to platform events.
-2. Normalize incoming platform messages into the canonical fields used by persistence and `process_with_claude`:
+2. Normalize incoming platform messages into the canonical fields used by persistence and `process_with_agent`:
    - stable `chat_id`
    - `chat_type` (`private`/`group`-like semantics)
    - sender display name
    - text/media blocks
-3. Reuse `process_with_claude(state, chat_id, sender, chat_type, override_prompt)` for inference/tool loop/session handling.
+3. Reuse `process_with_agent(state, chat_id, sender, chat_type, override_prompt)` for inference/tool loop/session handling.
 4. Implement outbound reply sending with:
    - platform length splitting policy
    - mention semantics for group/server channels
@@ -294,10 +263,10 @@ The core agent flow is already shared. New platform support should be implemente
 
 ## Scheduler internals
 
-The scheduler is a `tokio::spawn` task started in `run_bot()`. Every 60 seconds it:
+The scheduler is a `tokio::spawn` task started in `runtime::run()`. Every 60 seconds it:
 
 1. Queries `scheduled_tasks` for rows where `status = 'active' AND next_run <= NOW()`
-2. For each due task, calls `process_with_claude()` with `override_prompt = Some(task.prompt)`
+2. For each due task, calls `process_with_agent()` with `override_prompt = Some(task.prompt)`
 3. Sends the agent's response to the task's `chat_id`
 4. For cron tasks: computes next run from the cron expression and updates the row
 5. For one-shot tasks: sets `status = 'completed'`
@@ -324,7 +293,7 @@ sqlite> SELECT * FROM chats;
 
 | Task | How |
 |------|-----|
-| Change the model | Set `model: "claude-sonnet-4-20250514"` in `microclaw.config.yaml` |
+| Change the model | Set `model` in `microclaw.config.yaml` based on `llm_provider` |
 | Increase context window | Set `max_history_messages: 100` in `microclaw.config.yaml` (uses more tokens) |
 | Increase tool iterations | Set `max_tool_iterations: 200` in `microclaw.config.yaml` |
 | Reset memory | Delete files under `microclaw.data/runtime/groups/` |

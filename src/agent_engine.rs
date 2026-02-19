@@ -2,13 +2,16 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
 
-use crate::db::{call_blocking, Database, StoredMessage};
 use crate::embedding::EmbeddingProvider;
-use crate::llm_types::{ContentBlock, ImageSource, Message, MessageContent, ResponseContentBlock};
-use crate::memory_quality;
+use crate::hooks::HookOutcome;
 use crate::runtime::AppState;
-use crate::text::floor_char_boundary;
 use crate::tools::ToolAuthContext;
+use microclaw_core::llm_types::{
+    ContentBlock, ImageSource, Message, MessageContent, ResponseContentBlock,
+};
+use microclaw_core::text::floor_char_boundary;
+use microclaw_storage::db::{call_blocking, Database, StoredMessage};
+use microclaw_storage::memory_quality;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AgentRequestContext<'a> {
@@ -360,7 +363,7 @@ pub(crate) async fn process_with_agent_impl(
     let memory_context = format!("{}{}", file_memory, db_memory);
     let skills_catalog = state.skills.build_skills_catalog();
     let soul_content = load_soul_content(&state.config, chat_id);
-    let system_prompt = build_system_prompt(
+    let mut system_prompt = build_system_prompt(
         &state.config.bot_username,
         context.caller_channel,
         &memory_context,
@@ -430,6 +433,39 @@ pub(crate) async fn process_with_agent_impl(
             let _ = tx.send(AgentEvent::Iteration {
                 iteration: iteration + 1,
             });
+        }
+        if let Ok(hook_outcome) = state
+            .hooks
+            .run_before_llm(
+                chat_id,
+                context.caller_channel,
+                iteration + 1,
+                &system_prompt,
+                messages.len(),
+                tool_defs.len(),
+            )
+            .await
+        {
+            match hook_outcome {
+                HookOutcome::Block { reason } => {
+                    let text = if reason.trim().is_empty() {
+                        "Request blocked by policy hook.".to_string()
+                    } else {
+                        reason
+                    };
+                    if let Some(tx) = event_tx {
+                        let _ = tx.send(AgentEvent::FinalResponse { text: text.clone() });
+                    }
+                    return Ok(text);
+                }
+                HookOutcome::Allow { patches } => {
+                    for patch in patches {
+                        if let Some(v) = patch.get("system_prompt").and_then(|v| v.as_str()) {
+                            system_prompt = v.to_string();
+                        }
+                    }
+                }
+            }
         }
         let response = if let Some(tx) = event_tx {
             let (llm_tx, mut llm_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -589,6 +625,40 @@ pub(crate) async fn process_with_agent_impl(
             let mut tool_results = Vec::new();
             for block in &response.content {
                 if let ResponseContentBlock::ToolUse { id, name, input } = block {
+                    let mut effective_input = input.clone();
+                    if let Ok(hook_outcome) = state
+                        .hooks
+                        .run_before_tool(
+                            chat_id,
+                            context.caller_channel,
+                            iteration + 1,
+                            name,
+                            &effective_input,
+                        )
+                        .await
+                    {
+                        match hook_outcome {
+                            HookOutcome::Block { reason } => {
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: if reason.trim().is_empty() {
+                                        format!("tool '{}' blocked by policy hook", name)
+                                    } else {
+                                        reason
+                                    },
+                                    is_error: Some(true),
+                                });
+                                continue;
+                            }
+                            HookOutcome::Allow { patches } => {
+                                for patch in patches {
+                                    if let Some(v) = patch.get("tool_input") {
+                                        effective_input = v.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if let Some(tx) = event_tx {
                         let _ = tx.send(AgentEvent::ToolStart { name: name.clone() });
                     }
@@ -596,7 +666,7 @@ pub(crate) async fn process_with_agent_impl(
                     let started = std::time::Instant::now();
                     let mut result = state
                         .tools
-                        .execute_with_auth(name, input.clone(), &tool_auth)
+                        .execute_with_auth(name, effective_input.clone(), &tool_auth)
                         .await;
                     // Auto-retry on approval_required — the second call auto-approves
                     if result.is_error && result.error_type.as_deref() == Some("approval_required")
@@ -604,8 +674,57 @@ pub(crate) async fn process_with_agent_impl(
                         info!("Auto-retrying tool '{}' after approval gate", name);
                         result = state
                             .tools
-                            .execute_with_auth(name, input.clone(), &tool_auth)
+                            .execute_with_auth(name, effective_input.clone(), &tool_auth)
                             .await;
+                    }
+                    if let Ok(hook_outcome) = state
+                        .hooks
+                        .run_after_tool(
+                            chat_id,
+                            context.caller_channel,
+                            iteration + 1,
+                            name,
+                            &effective_input,
+                            &result,
+                        )
+                        .await
+                    {
+                        match hook_outcome {
+                            HookOutcome::Block { reason } => {
+                                result.is_error = true;
+                                if !reason.trim().is_empty() {
+                                    result.content = reason;
+                                }
+                                if result.error_type.is_none() {
+                                    result.error_type = Some("hook_blocked".to_string());
+                                }
+                            }
+                            HookOutcome::Allow { patches } => {
+                                for patch in patches {
+                                    if let Some(v) = patch.get("content").and_then(|v| v.as_str()) {
+                                        result.content = v.to_string();
+                                    }
+                                    if let Some(v) = patch.get("is_error").and_then(|v| v.as_bool())
+                                    {
+                                        result.is_error = v;
+                                    }
+                                    if let Some(v) = patch
+                                        .get("error_type")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::to_string)
+                                    {
+                                        result.error_type = Some(v);
+                                    }
+                                    if let Some(v) = patch
+                                        .get("status_code")
+                                        .and_then(|v| v.as_i64())
+                                        .map(|x| x as i32)
+                                    {
+                                        result.status_code = Some(v);
+                                    }
+                                }
+                            }
+                        }
                     }
                     if result.is_error && result.error_type.as_deref() != Some("approval_required")
                     {
@@ -811,7 +930,7 @@ pub(crate) async fn build_db_memory_context(
         return String::new();
     }
 
-    let mut ordered: Vec<&crate::db::Memory> = Vec::new();
+    let mut ordered: Vec<&microclaw_storage::db::Memory> = Vec::new();
     #[cfg(feature = "sqlite-vec")]
     let mut retrieval_method = "keyword";
     #[cfg(not(feature = "sqlite-vec"))]
@@ -827,7 +946,7 @@ pub(crate) async fn build_db_memory_context(
                     })
                     .await;
                     if let Ok(knn_rows) = knn_result {
-                        let by_id: std::collections::HashMap<i64, &crate::db::Memory> =
+                        let by_id: std::collections::HashMap<i64, &microclaw_storage::db::Memory> =
                             memories.iter().map(|m| (m.id, m)).collect();
                         for (id, _) in knn_rows {
                             if let Some(mem) = by_id.get(&id) {
@@ -851,7 +970,7 @@ pub(crate) async fn build_db_memory_context(
     if ordered.is_empty() {
         // Score by relevance to current query; preserve recency for ties.
         let query_tokens = tokenize_for_relevance(query);
-        let mut scored: Vec<(usize, usize, &crate::db::Memory)> = memories
+        let mut scored: Vec<(usize, usize, &microclaw_storage::db::Memory)> = memories
             .iter()
             .enumerate()
             .map(|(idx, m)| {
@@ -1362,17 +1481,19 @@ async fn compact_messages(
 #[cfg(test)]
 mod tests {
     use super::{build_db_memory_context, process_with_agent, AgentRequestContext};
-    use crate::channel_adapter::ChannelRegistry;
     use crate::config::{Config, WorkingDirIsolation};
-    use crate::db::{Database, StoredMessage};
-    use crate::error::MicroClawError;
     use crate::llm::LlmProvider;
-    use crate::llm_types::{Message, MessagesResponse, ResponseContentBlock, ToolDefinition};
     use crate::memory::MemoryManager;
     use crate::runtime::AppState;
     use crate::skills::SkillManager;
     use crate::tools::ToolRegistry;
     use crate::web::WebAdapter;
+    use microclaw_channels::channel_adapter::ChannelRegistry;
+    use microclaw_core::error::MicroClawError;
+    use microclaw_core::llm_types::{
+        Message, MessagesResponse, ResponseContentBlock, ToolDefinition,
+    };
+    use microclaw_storage::db::{Database, StoredMessage};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -1419,7 +1540,7 @@ mod tests {
                 });
             }
             let saw_guard = messages.iter().any(|m| match &m.content {
-                crate::llm_types::MessageContent::Text(t) => {
+                microclaw_core::llm_types::MessageContent::Text(t) => {
                     t.contains("[runtime_guard]: Your previous reply had no user-visible text.")
                 }
                 _ => false,
@@ -1467,6 +1588,7 @@ mod tests {
             data_dir: base_dir.to_string_lossy().to_string(),
             working_dir: base_dir.join("tmp").to_string_lossy().to_string(),
             working_dir_isolation: WorkingDirIsolation::Shared,
+            sandbox: crate::config::SandboxConfig::default(),
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
@@ -1513,6 +1635,7 @@ mod tests {
             db: db.clone(),
             memory: MemoryManager::new(runtime_dir.to_str().unwrap()),
             skills: SkillManager::from_skills_dir(&cfg.skills_data_dir()),
+            hooks: Arc::new(crate::hooks::HookManager::from_config(&cfg)),
             llm,
             embedding: None,
             tools: ToolRegistry::new(&cfg, channel_registry, db),
@@ -1813,6 +1936,7 @@ mod tests {
             memory_token_budget: 1500,
             working_dir: "./tmp".into(),
             working_dir_isolation: WorkingDirIsolation::Shared,
+            sandbox: crate::config::SandboxConfig::default(),
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
@@ -1879,6 +2003,7 @@ mod tests {
             memory_token_budget: 1500,
             working_dir: "./tmp".into(),
             working_dir_isolation: WorkingDirIsolation::Shared,
+            sandbox: crate::config::SandboxConfig::default(),
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
@@ -1912,6 +2037,63 @@ mod tests {
         let soul = super::load_soul_content(&config, 999);
         assert!(soul.is_some());
         assert!(soul.unwrap().contains("custom personality"));
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    #[tokio::test]
+    async fn test_hook_before_llm_block_returns_reason() {
+        let base_dir = std::env::temp_dir().join(format!("mc_hook_block_{}", uuid::Uuid::new_v4()));
+        let hook_dir = base_dir.join("hooks/block-all");
+        std::fs::create_dir_all(&hook_dir).unwrap();
+        let command = if cfg!(windows) {
+            std::fs::write(
+                hook_dir.join("hook.cmd"),
+                "@echo off\r\necho {\"action\":\"block\",\"reason\":\"blocked by test hook\"}\r\n",
+            )
+            .unwrap();
+            "hook.cmd"
+        } else {
+            std::fs::write(
+                hook_dir.join("hook.sh"),
+                "#!/bin/sh\necho '{\"action\":\"block\",\"reason\":\"blocked by test hook\"}'\n",
+            )
+            .unwrap();
+            "sh hook.sh"
+        };
+        std::fs::write(
+            hook_dir.join("HOOK.md"),
+            format!(
+                r#"---
+name: block-all
+description: block all llm calls
+events: [BeforeLLMCall]
+command: "{command}"
+enabled: true
+timeout_ms: 1000
+---
+"#
+            ),
+        )
+        .unwrap();
+
+        let state = test_state_with_base_dir(&base_dir);
+        let chat_id = 90001_i64;
+        store_user_message(&state.db, chat_id, "hello");
+
+        let reply = process_with_agent(
+            &state,
+            AgentRequestContext {
+                caller_channel: "web",
+                chat_id,
+                chat_type: "web",
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(reply.contains("blocked by test hook"));
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }

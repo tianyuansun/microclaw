@@ -21,8 +21,8 @@ use crate::codex_auth::{
     codex_config_default_openai_base_url, is_openai_codex_provider, provider_allows_empty_api_key,
     resolve_openai_codex_auth,
 };
-use crate::error::MicroClawError;
-use crate::text::floor_char_boundary;
+use microclaw_core::error::MicroClawError;
+use microclaw_core::text::floor_char_boundary;
 
 // ---------------------------------------------------------------------------
 // Declarative channel metadata: adding a new channel only requires adding
@@ -111,6 +111,15 @@ const DYNAMIC_CHANNELS: &[DynamicChannelDef] = &[
 /// Build the setup-wizard field key from channel name + yaml key.
 fn dynamic_field_key(channel: &str, yaml_key: &str) -> String {
     format!("DYN_{}_{}", channel.to_uppercase(), yaml_key.to_uppercase())
+}
+
+fn docker_available_for_setup() -> bool {
+    std::process::Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -474,6 +483,22 @@ impl SetupApp {
                     secret: false,
                 },
                 Field {
+                    key: "SANDBOX_ENABLED".into(),
+                    label: "Enable sandbox for bash tool (true/false)".into(),
+                    value: existing
+                        .get("SANDBOX_ENABLED")
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            if docker_available_for_setup() {
+                                "true".into()
+                            } else {
+                                "false".into()
+                            }
+                        }),
+                    required: false,
+                    secret: false,
+                },
+                Field {
                     key: "REFLECTOR_ENABLED".into(),
                     label: "Memory reflector enabled (true/false)".into(),
                     value: existing
@@ -654,6 +679,10 @@ impl SetupApp {
                     map.insert("DATA_DIR".into(), config.data_dir);
                     map.insert("TIMEZONE".into(), config.timezone);
                     map.insert("WORKING_DIR".into(), config.working_dir);
+                    map.insert(
+                        "SANDBOX_ENABLED".into(),
+                        (config.sandbox.mode == crate::config::SandboxMode::All).to_string(),
+                    );
                     map.insert(
                         "REFLECTOR_ENABLED".into(),
                         config.reflector_enabled.to_string(),
@@ -940,6 +969,17 @@ impl SetupApp {
             working_dir
         };
         fs::create_dir_all(&workdir)?;
+
+        let sandbox_enabled = self.field_value("SANDBOX_ENABLED");
+        if !sandbox_enabled.is_empty() {
+            let lower = sandbox_enabled.to_ascii_lowercase();
+            let valid = matches!(lower.as_str(), "true" | "false" | "1" | "0" | "yes" | "no");
+            if !valid {
+                return Err(MicroClawError::Config(
+                    "SANDBOX_ENABLED must be true/false (or 1/0)".into(),
+                ));
+            }
+        }
 
         let memory_token_budget_raw = self.field_value("MEMORY_TOKEN_BUDGET");
         if !memory_token_budget_raw.is_empty() {
@@ -1236,6 +1276,13 @@ impl SetupApp {
             "DATA_DIR" => "./microclaw.data".into(),
             "TIMEZONE" => "UTC".into(),
             "WORKING_DIR" => "./tmp".into(),
+            "SANDBOX_ENABLED" => {
+                if docker_available_for_setup() {
+                    "true".into()
+                } else {
+                    "false".into()
+                }
+            }
             "REFLECTOR_ENABLED" => "true".into(),
             "REFLECTOR_INTERVAL_MINS" => "15".into(),
             "MEMORY_TOKEN_BUDGET" => "1500".into(),
@@ -1270,6 +1317,7 @@ impl SetupApp {
             "DATA_DIR"
             | "TIMEZONE"
             | "WORKING_DIR"
+            | "SANDBOX_ENABLED"
             | "REFLECTOR_ENABLED"
             | "REFLECTOR_INTERVAL_MINS"
             | "MEMORY_TOKEN_BUDGET" => "App",
@@ -1302,9 +1350,10 @@ impl SetupApp {
             "DATA_DIR" => 0,
             "TIMEZONE" => 1,
             "WORKING_DIR" => 2,
-            "REFLECTOR_ENABLED" => 3,
-            "REFLECTOR_INTERVAL_MINS" => 4,
-            "MEMORY_TOKEN_BUDGET" => 5,
+            "SANDBOX_ENABLED" => 3,
+            "REFLECTOR_ENABLED" => 4,
+            "REFLECTOR_INTERVAL_MINS" => 5,
+            "MEMORY_TOKEN_BUDGET" => 6,
             "LLM_PROVIDER" => 10,
             "LLM_API_KEY" => 11,
             "LLM_MODEL" => 12,
@@ -1352,6 +1401,7 @@ fn perform_online_validation(
     model: &str,
     codex_account_id: Option<&str>,
 ) -> Result<Vec<String>, MicroClawError> {
+    const VALIDATION_MAX_OUTPUT_TOKENS: u32 = 64;
     let mut checks = Vec::new();
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -1409,7 +1459,7 @@ fn perform_online_validation(
         }
         let body = serde_json::json!({
             "model": model,
-            "max_tokens": 1,
+            "max_tokens": VALIDATION_MAX_OUTPUT_TOKENS,
             "messages": [{"role": "user", "content": "hi"}]
         });
         let resp = client
@@ -1463,7 +1513,7 @@ fn perform_online_validation(
             let endpoint = format!("{}/chat/completions", base.trim_end_matches('/'));
             let mut body = serde_json::json!({
                 "model": model,
-                "max_tokens": 1,
+                "max_tokens": VALIDATION_MAX_OUTPUT_TOKENS,
                 "messages": [{"role": "user", "content": "hi"}]
             });
             let mut resp = send_openai_validation_chat_request(&client, &endpoint, api_key, &body)?;
@@ -1486,6 +1536,12 @@ fn perform_online_validation(
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().unwrap_or_default();
+            if is_validation_output_capped_error(&text) {
+                checks.push(format!(
+                    "LLM OK (openai-compatible, model={model}; probe output capped)"
+                ));
+                return Ok(checks);
+            }
             let detail = extract_openai_error_detail(status, &text);
             return Err(MicroClawError::Config(format!(
                 "LLM validation failed: {detail}"
@@ -1540,6 +1596,12 @@ fn should_retry_with_max_completion_tokens(error_text: &str) -> bool {
 
     let lower = error_text.to_ascii_lowercase();
     lower.contains("max_tokens") && lower.contains("max_completion_tokens")
+}
+
+fn is_validation_output_capped_error(error_text: &str) -> bool {
+    let lower = error_text.to_ascii_lowercase();
+    lower.contains("max_tokens or model output limit was reached")
+        || (lower.contains("max_tokens") && lower.contains("output limit"))
 }
 
 fn switch_to_max_completion_tokens(body: &mut serde_json::Value) -> bool {
@@ -1738,6 +1800,21 @@ fn save_config_yaml(
         .cloned()
         .unwrap_or_else(|| "./tmp".into());
     yaml.push_str(&format!("working_dir: \"{}\"\n", working_dir));
+    let sandbox_enabled = values
+        .get("SANDBOX_ENABLED")
+        .map(|v| {
+            let lower = v.trim().to_ascii_lowercase();
+            lower == "true" || lower == "1" || lower == "yes"
+        })
+        .unwrap_or(false);
+    yaml.push_str("# Optional container sandbox for bash tool execution\n");
+    yaml.push_str("sandbox:\n");
+    if sandbox_enabled {
+        yaml.push_str("  mode: \"all\"\n");
+        yaml.push_str("  backend: \"auto\"\n");
+    } else {
+        yaml.push_str("  mode: \"off\"\n");
+    }
 
     let reflector_enabled = values
         .get("REFLECTOR_ENABLED")
@@ -2310,6 +2387,7 @@ mod tests {
         values.insert("BOT_USERNAME".into(), "new_bot".into());
         values.insert("LLM_PROVIDER".into(), "anthropic".into());
         values.insert("LLM_API_KEY".into(), "key".into());
+        values.insert("SANDBOX_ENABLED".into(), "true".into());
 
         let backup = save_config_yaml(&yaml_path, &values).unwrap();
         assert!(backup.is_none()); // No previous file to back up
@@ -2324,6 +2402,8 @@ mod tests {
         assert!(s.contains("    enabled: true\n"));
         assert!(s.contains("llm_provider: \"anthropic\""));
         assert!(s.contains("api_key: \"key\""));
+        assert!(s.contains("sandbox:\n"));
+        assert!(s.contains("  mode: \"all\"\n"));
 
         // Save again to test backup
         let backup2 = save_config_yaml(&yaml_path, &values).unwrap();
@@ -2347,6 +2427,8 @@ mod tests {
         save_config_yaml(&yaml_path, &values).unwrap();
         let s = fs::read_to_string(&yaml_path).unwrap();
         assert!(s.contains("\nchannels:\n"));
+        assert!(s.contains("sandbox:\n"));
+        assert!(s.contains("  mode: \"off\"\n"));
         assert!(s.contains("  discord:\n"));
         assert!(s.contains("    enabled: false\n"));
         assert!(s.contains("    bot_token: \"discord_token_123\"\n"));
@@ -2569,6 +2651,14 @@ mod tests {
         assert_eq!(body.get("max_tokens"), None);
         assert_eq!(body["max_completion_tokens"], 1);
         assert!(!switch_to_max_completion_tokens(&mut body));
+    }
+
+    #[test]
+    fn test_is_validation_output_capped_error() {
+        assert!(is_validation_output_capped_error(
+            "Could not finish the message because max_tokens or model output limit was reached"
+        ));
+        assert!(!is_validation_output_capped_error("invalid api key"));
     }
 
     #[test]
