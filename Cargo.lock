@@ -1531,6 +1531,7 @@ dependencies = [
  "include_dir",
  "microclaw-app",
  "microclaw-channels",
+ "microclaw-clawhub",
  "microclaw-core",
  "microclaw-storage",
  "microclaw-tools",
@@ -1580,6 +1581,20 @@ dependencies = [
  "microclaw-storage",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "microclaw-clawhub"
+version = "0.0.80"
+dependencies = [
+ "chrono",
+ "microclaw-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+ "zip",
 ]
 
 [[package]]

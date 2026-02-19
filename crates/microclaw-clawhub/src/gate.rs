@@ -1,4 +1,4 @@
-use crate::clawhub::types::Requires;
+use crate::types::Requires;
 use std::env;
 
 pub struct GateCheckResult {

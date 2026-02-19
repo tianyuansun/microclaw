@@ -1,5 +1,5 @@
-use crate::clawhub::types::*;
-use crate::error::MicroClawError;
+use crate::types::*;
+use microclaw_core::error::MicroClawError;
 
 pub struct ClawHubClient {
     base_url: String,

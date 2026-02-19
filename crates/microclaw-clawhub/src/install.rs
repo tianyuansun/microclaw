@@ -1,8 +1,8 @@
-use crate::clawhub::client::ClawHubClient;
-use crate::clawhub::gate::check_requirements;
-use crate::clawhub::lockfile::{is_clawhub_managed, read_lockfile, write_lockfile};
-use crate::clawhub::types::{LockEntry, LockFile};
-use crate::error::MicroClawError;
+use crate::client::ClawHubClient;
+use crate::gate::check_requirements;
+use crate::lockfile::{is_clawhub_managed, read_lockfile, write_lockfile};
+use crate::types::{LockEntry, LockFile};
+use microclaw_core::error::MicroClawError;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use zip::ZipArchive;
@@ -163,7 +163,7 @@ pub fn check_update_available(
 
 #[cfg(test)]
 mod tests {
-    use crate::clawhub::types::LockFile;
+    use crate::types::LockFile;
     use std::collections::HashMap;
 
     use super::check_update_available;

@@ -1,10 +1,9 @@
-use crate::clawhub::client::ClawHubClient;
-use crate::clawhub::install::install_skill;
-use crate::clawhub::install::InstallOptions;
 use crate::config::Config;
 use crate::llm_types::ToolDefinition;
 use crate::tools::{schema_object, Tool, ToolResult};
 use async_trait::async_trait;
+use microclaw_clawhub::client::ClawHubClient;
+use microclaw_clawhub::install::{install_skill, InstallOptions};
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
 

@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/microclaw-core",
+    "crates/microclaw-clawhub",
     "crates/microclaw-storage",
     "crates/microclaw-tools",
     "crates/microclaw-channels",
@@ -21,6 +22,7 @@ sqlite-vec = ["microclaw-storage/sqlite-vec"]
 
 [dependencies]
 microclaw-core = { path = "crates/microclaw-core" }
+microclaw-clawhub = { path = "crates/microclaw-clawhub" }
 microclaw-storage = { path = "crates/microclaw-storage" }
 microclaw-tools = { path = "crates/microclaw-tools" }
 microclaw-channels = { path = "crates/microclaw-channels" }

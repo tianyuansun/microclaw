@@ -1,5 +1,5 @@
-use crate::clawhub::types::LockFile;
-use crate::error::MicroClawError;
+use crate::types::LockFile;
+use microclaw_core::error::MicroClawError;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -39,7 +39,7 @@ pub fn is_clawhub_managed(lock: &LockFile, slug: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clawhub::types::LockEntry;
+    use crate::types::LockEntry;
 
     #[test]
     fn test_lockfile_missing_returns_empty() {

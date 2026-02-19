@@ -1,8 +1,8 @@
-use crate::clawhub::client::ClawHubClient;
-use crate::clawhub::install::install_skill;
-use crate::clawhub::lockfile::read_lockfile;
 use crate::config::Config;
 use crate::error::MicroClawError;
+use microclaw_clawhub::client::ClawHubClient;
+use microclaw_clawhub::install::{install_skill, InstallOptions};
+use microclaw_clawhub::lockfile::read_lockfile;
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
 
@@ -54,7 +54,7 @@ pub fn handle_skill_cli(args: &[String], config: &Config) -> Result<(), MicroCla
 
             rt.block_on(async {
                 let client = ClawHubClient::new(registry, token);
-                let options = crate::clawhub::install::InstallOptions {
+                let options = InstallOptions {
                     force: args.contains(&"--force".to_string()),
                     skip_gates: false,
                     skip_security: config.clawhub_skip_security_warnings,
