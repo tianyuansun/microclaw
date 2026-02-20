@@ -2189,7 +2189,7 @@ mod tests {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0)
                 >= 0.0
-            );
+        );
 
         let points_vec = history_json
             .get("points")
