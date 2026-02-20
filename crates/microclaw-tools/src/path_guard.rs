@@ -325,7 +325,9 @@ mod tests {
     fn test_blocks_traversal_via_parent_dir() {
         // Paths using .. to reach blocked locations should still be caught
         assert!(is_blocked(Path::new("/tmp/../etc/shadow")));
-        assert!(is_blocked(Path::new("/home/user/project/../../.ssh/id_rsa")));
+        assert!(is_blocked(Path::new(
+            "/home/user/project/../../.ssh/id_rsa"
+        )));
         assert!(is_blocked(Path::new("/foo/bar/../../../etc/sudoers")));
         assert!(is_blocked(Path::new("/tmp/../home/user/.aws/credentials")));
     }
@@ -344,10 +346,7 @@ mod tests {
             normalize_path(Path::new("/a/./b/./c")),
             PathBuf::from("/a/b/c")
         );
-        assert_eq!(
-            normalize_path(Path::new("a/b/../c")),
-            PathBuf::from("a/c")
-        );
+        assert_eq!(normalize_path(Path::new("a/b/../c")), PathBuf::from("a/c"));
     }
 
     #[test]
