@@ -63,9 +63,13 @@ impl ToolRegistry {
                     &config.working_dir,
                     config.working_dir_isolation,
                 )
+                .with_default_timeout_secs(config.tool_timeout_secs("bash", 120))
                 .with_sandbox_router(sandbox_router.clone()),
             ),
-            Box::new(browser::BrowserTool::new(&config.data_dir)),
+            Box::new(
+                browser::BrowserTool::new(&config.data_dir)
+                    .with_default_timeout_secs(config.tool_timeout_secs("browser", 30)),
+            ),
             Box::new(read_file::ReadFileTool::new_with_isolation(
                 &config.working_dir,
                 config.working_dir_isolation,
@@ -88,8 +92,12 @@ impl ToolRegistry {
             )),
             Box::new(memory::ReadMemoryTool::new(&config.data_dir)),
             Box::new(memory::WriteMemoryTool::new(&config.data_dir, db.clone())),
-            Box::new(web_fetch::WebFetchTool),
-            Box::new(web_search::WebSearchTool),
+            Box::new(web_fetch::WebFetchTool::new(
+                config.tool_timeout_secs("web_fetch", 15),
+            )),
+            Box::new(web_search::WebSearchTool::new(
+                config.tool_timeout_secs("web_search", 15),
+            )),
             Box::new(send_message::SendMessageTool::new(
                 channel_registry.clone(),
                 db.clone(),
@@ -184,9 +192,13 @@ impl ToolRegistry {
                     &config.working_dir,
                     config.working_dir_isolation,
                 )
+                .with_default_timeout_secs(config.tool_timeout_secs("bash", 120))
                 .with_sandbox_router(sandbox_router.clone()),
             ),
-            Box::new(browser::BrowserTool::new(&config.data_dir)),
+            Box::new(
+                browser::BrowserTool::new(&config.data_dir)
+                    .with_default_timeout_secs(config.tool_timeout_secs("browser", 30)),
+            ),
             Box::new(read_file::ReadFileTool::new_with_isolation(
                 &config.working_dir,
                 config.working_dir_isolation,
@@ -208,8 +220,12 @@ impl ToolRegistry {
                 config.working_dir_isolation,
             )),
             Box::new(memory::ReadMemoryTool::new(&config.data_dir)),
-            Box::new(web_fetch::WebFetchTool),
-            Box::new(web_search::WebSearchTool),
+            Box::new(web_fetch::WebFetchTool::new(
+                config.tool_timeout_secs("web_fetch", 15),
+            )),
+            Box::new(web_search::WebSearchTool::new(
+                config.tool_timeout_secs("web_search", 15),
+            )),
             Box::new(activate_skill::ActivateSkillTool::new(&skills_data_dir)),
             Box::new(structured_memory::StructuredMemorySearchTool::new(db)),
         ];

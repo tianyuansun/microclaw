@@ -36,6 +36,14 @@ If a hook times out or crashes, runtime skips the hook and continues.
 
 If history is empty, generate traffic first and re-check.
 
+MCP reliability counters (snapshot/summary):
+- `mcp_rate_limited_rejections`
+- `mcp_bulkhead_rejections`
+- `mcp_circuit_open_rejections`
+
+These counters are also persisted to `metrics_history` and available in
+`GET /api/metrics/history`.
+
 ## Stability Gate
 
 - Run stability smoke suite locally: `scripts/ci/stability_smoke.sh`
@@ -69,3 +77,66 @@ When any burn alert is active:
 - Replay behavior:
   - re-queues task with immediate `next_run`
   - marks DLQ entry as replayed with a replay note (`queued` or `skipped` reason)
+
+## Timeout Budget Tuning
+
+- Global tool timeout default: `default_tool_timeout_secs`
+- Per-tool timeout overrides: `tool_timeout_overrides.<tool_name>`
+- Global MCP request timeout default: `default_mcp_request_timeout_secs`
+- MCP per-server override remains supported in `mcp.json`:
+  - `mcpServers.<name>.request_timeout_secs`
+
+Precedence:
+- Tools: input `timeout_secs` > `tool_timeout_overrides` > `default_tool_timeout_secs`
+- MCP: server `request_timeout_secs` > `default_mcp_request_timeout_secs`
+
+Example config:
+
+```yaml
+default_tool_timeout_secs: 30
+tool_timeout_overrides:
+  bash: 90
+  browser: 45
+  web_fetch: 20
+  web_search: 20
+default_mcp_request_timeout_secs: 120
+```
+
+## MCP Reliability Tuning
+
+- `mcp.json` supports per-server circuit breaker knobs:
+  - `circuit_breaker_failure_threshold` (default `5`)
+  - `circuit_breaker_cooldown_secs` (default `30`)
+- `request_timeout_secs` remains per-server timeout budget.
+
+## MCP Server Guardrails
+
+- `mcp.json` supports server-level isolation controls:
+  - `max_concurrent_requests` (default `4`)
+  - `queue_wait_ms` (default `200`)
+  - `rate_limit_per_minute` (default `120`)
+
+Example:
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "transport": "streamable_http",
+      "endpoint": "http://127.0.0.1:8080/mcp",
+      "request_timeout_secs": 120,
+      "circuit_breaker_failure_threshold": 5,
+      "circuit_breaker_cooldown_secs": 30,
+      "max_concurrent_requests": 4,
+      "queue_wait_ms": 200,
+      "rate_limit_per_minute": 120
+    }
+  }
+}
+```
+
+Behavior:
+- consecutive MCP request failures trip the breaker and short-circuit calls during cooldown.
+- after cooldown, requests are attempted again automatically.
+- requests are fail-fast when queue wait budget is exceeded.
+- per-server rate limit enforces a fixed 60s window budget.

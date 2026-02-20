@@ -12,6 +12,7 @@ use super::{auth_context_from_input, schema_object, Tool, ToolResult};
 
 pub struct BrowserTool {
     data_dir: PathBuf,
+    default_timeout_secs: u64,
 }
 
 fn split_browser_command(command: &str) -> Result<Vec<String>, String> {
@@ -73,7 +74,13 @@ impl BrowserTool {
     pub fn new(data_dir: &str) -> Self {
         BrowserTool {
             data_dir: PathBuf::from(data_dir).join("groups"),
+            default_timeout_secs: 30,
         }
+    }
+
+    pub fn with_default_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.default_timeout_secs = timeout_secs;
+        self
     }
 
     fn profile_path(&self, chat_id: i64) -> PathBuf {
@@ -135,7 +142,7 @@ impl Tool for BrowserTool {
                     },
                     "timeout_secs": {
                         "type": "integer",
-                        "description": "Timeout in seconds (default: 30)"
+                        "description": "Timeout in seconds (defaults to configured tool timeout budget)"
                     }
                 }),
                 &["command"],
@@ -152,7 +159,7 @@ impl Tool for BrowserTool {
         let timeout_secs = input
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(30);
+            .unwrap_or(self.default_timeout_secs);
 
         let auth = auth_context_from_input(&input);
 

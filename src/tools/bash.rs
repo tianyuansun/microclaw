@@ -14,6 +14,7 @@ use super::{schema_object, Tool, ToolResult};
 pub struct BashTool {
     working_dir: PathBuf,
     working_dir_isolation: WorkingDirIsolation,
+    default_timeout_secs: u64,
     sandbox_router: Option<Arc<SandboxRouter>>,
 }
 
@@ -29,8 +30,14 @@ impl BashTool {
         Self {
             working_dir: PathBuf::from(working_dir),
             working_dir_isolation,
+            default_timeout_secs: 120,
             sandbox_router: None,
         }
+    }
+
+    pub fn with_default_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.default_timeout_secs = timeout_secs;
+        self
     }
 
     pub fn with_sandbox_router(mut self, router: Arc<SandboxRouter>) -> Self {
@@ -57,7 +64,7 @@ impl Tool for BashTool {
                     },
                     "timeout_secs": {
                         "type": "integer",
-                        "description": "Timeout in seconds (default: 120)"
+                        "description": "Timeout in seconds (defaults to configured tool timeout budget)"
                     }
                 }),
                 &["command"],
@@ -74,7 +81,7 @@ impl Tool for BashTool {
         let timeout_secs = input
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(120);
+            .unwrap_or(self.default_timeout_secs);
         let working_dir =
             super::resolve_tool_working_dir(&self.working_dir, self.working_dir_isolation, &input);
         if let Err(e) = tokio::fs::create_dir_all(&working_dir).await {

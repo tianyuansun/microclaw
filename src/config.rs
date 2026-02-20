@@ -83,6 +83,12 @@ fn default_max_session_messages() -> usize {
 fn default_compact_keep_recent() -> usize {
     20
 }
+fn default_tool_timeout_secs() -> u64 {
+    30
+}
+fn default_mcp_request_timeout_secs() -> u64 {
+    120
+}
 fn default_control_chat_ids() -> Vec<i64> {
     Vec::new()
 }
@@ -198,6 +204,12 @@ pub struct Config {
     pub max_session_messages: usize,
     #[serde(default = "default_compact_keep_recent")]
     pub compact_keep_recent: usize,
+    #[serde(default = "default_tool_timeout_secs")]
+    pub default_tool_timeout_secs: u64,
+    #[serde(default)]
+    pub tool_timeout_overrides: HashMap<String, u64>,
+    #[serde(default = "default_mcp_request_timeout_secs")]
+    pub default_mcp_request_timeout_secs: u64,
     #[serde(default)]
     pub show_thinking: bool,
 
@@ -329,6 +341,9 @@ impl Config {
             control_chat_ids: vec![],
             max_session_messages: 40,
             compact_keep_recent: 20,
+            default_tool_timeout_secs: default_tool_timeout_secs(),
+            tool_timeout_overrides: HashMap::new(),
+            default_mcp_request_timeout_secs: default_mcp_request_timeout_secs(),
             discord_bot_token: None,
             discord_allowed_channels: vec![],
             discord_no_mention: false,
@@ -575,6 +590,24 @@ impl Config {
         if self.max_document_size_mb == 0 {
             self.max_document_size_mb = default_max_document_size_mb();
         }
+        if self.default_tool_timeout_secs == 0 {
+            self.default_tool_timeout_secs = default_tool_timeout_secs();
+        }
+        if self.default_mcp_request_timeout_secs == 0 {
+            self.default_mcp_request_timeout_secs = default_mcp_request_timeout_secs();
+        }
+        self.tool_timeout_overrides = self
+            .tool_timeout_overrides
+            .drain()
+            .filter_map(|(name, timeout_secs)| {
+                let normalized = name.trim().to_ascii_lowercase();
+                if normalized.is_empty() || timeout_secs == 0 {
+                    None
+                } else {
+                    Some((normalized, timeout_secs))
+                }
+            })
+            .collect();
         if self.memory_token_budget == 0 {
             self.memory_token_budget = default_memory_token_budget();
         }
@@ -724,6 +757,26 @@ impl Config {
         )
     }
 
+    pub fn tool_timeout_secs(&self, tool_name: &str, fallback: u64) -> u64 {
+        let normalized = tool_name.trim().to_ascii_lowercase();
+        if let Some(timeout_secs) = self.tool_timeout_overrides.get(&normalized) {
+            return *timeout_secs;
+        }
+        if self.default_tool_timeout_secs == 0 {
+            fallback
+        } else {
+            self.default_tool_timeout_secs
+        }
+    }
+
+    pub fn mcp_request_timeout_secs(&self) -> u64 {
+        if self.default_mcp_request_timeout_secs == 0 {
+            default_mcp_request_timeout_secs()
+        } else {
+            self.default_mcp_request_timeout_secs
+        }
+    }
+
     /// Save config as YAML to the given path.
     #[allow(dead_code)]
     pub fn save_yaml(&self, path: &str) -> Result<(), MicroClawError> {
@@ -795,6 +848,9 @@ voice_transcription_command: "whisper-mlx --file {file}"
         assert!(cloned.control_chat_ids.is_empty());
         assert_eq!(cloned.max_session_messages, 40);
         assert_eq!(cloned.compact_keep_recent, 20);
+        assert_eq!(cloned.default_tool_timeout_secs, 30);
+        assert!(cloned.tool_timeout_overrides.is_empty());
+        assert_eq!(cloned.default_mcp_request_timeout_secs, 120);
         assert!(cloned.discord_bot_token.is_none());
         assert!(cloned.discord_allowed_channels.is_empty());
         let _ = format!("{:?}", config);
@@ -845,6 +901,37 @@ voice_transcription_command: "whisper-mlx --file {file}"
         assert!(matches!(config.sandbox.mode, SandboxMode::Off));
         assert_eq!(config.max_document_size_mb, 100);
         assert_eq!(config.timezone, "UTC");
+        assert_eq!(config.default_tool_timeout_secs, 30);
+        assert!(config.tool_timeout_overrides.is_empty());
+        assert_eq!(config.default_mcp_request_timeout_secs, 120);
+    }
+
+    #[test]
+    fn test_post_deserialize_timeout_defaults_and_overrides() {
+        let mut config = test_config();
+        config.default_tool_timeout_secs = 0;
+        config.default_mcp_request_timeout_secs = 0;
+        config.tool_timeout_overrides = HashMap::from([
+            ("  bash ".to_string(), 90),
+            ("".to_string(), 5),
+            ("browser".to_string(), 0),
+        ]);
+        config.post_deserialize().unwrap();
+
+        assert_eq!(config.default_tool_timeout_secs, 30);
+        assert_eq!(config.default_mcp_request_timeout_secs, 120);
+        assert_eq!(config.tool_timeout_overrides.len(), 1);
+        assert_eq!(config.tool_timeout_overrides.get("bash"), Some(&90));
+    }
+
+    #[test]
+    fn test_tool_timeout_lookup_prefers_override_then_default() {
+        let mut config = test_config();
+        config.default_tool_timeout_secs = 45;
+        config.tool_timeout_overrides.insert("bash".to_string(), 75);
+
+        assert_eq!(config.tool_timeout_secs("bash", 120), 75);
+        assert_eq!(config.tool_timeout_secs("browser", 120), 45);
     }
 
     #[test]

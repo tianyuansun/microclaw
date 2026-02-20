@@ -5,14 +5,18 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::{error, info, warn};
 
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-05";
-const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_MAX_RETRIES: u32 = 2;
 const DEFAULT_HEALTH_INTERVAL_SECS: u64 = 60;
 const TOOLS_CACHE_TTL_SECS: u64 = 300;
+const DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD: u32 = 5;
+const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECS: u64 = 30;
+const DEFAULT_MAX_CONCURRENT_REQUESTS: u32 = 4;
+const DEFAULT_QUEUE_WAIT_MS: u64 = 200;
+const DEFAULT_RATE_LIMIT_PER_MINUTE: u32 = 120;
 
 // --- JSON-RPC 2.0 types ---
 
@@ -48,6 +52,15 @@ fn default_transport() -> String {
     "stdio".to_string()
 }
 
+fn resolve_request_timeout_secs(
+    config_timeout_secs: Option<u64>,
+    default_request_timeout_secs: u64,
+) -> u64 {
+    config_timeout_secs
+        .unwrap_or(default_request_timeout_secs)
+        .max(1)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpServerConfig {
     #[serde(default = "default_transport")]
@@ -60,6 +73,16 @@ pub struct McpServerConfig {
     pub max_retries: Option<u32>,
     #[serde(default)]
     pub health_interval_secs: Option<u64>,
+    #[serde(default, alias = "circuitBreakerFailureThreshold")]
+    pub circuit_breaker_failure_threshold: Option<u32>,
+    #[serde(default, alias = "circuitBreakerCooldownSecs")]
+    pub circuit_breaker_cooldown_secs: Option<u64>,
+    #[serde(default, alias = "maxConcurrentRequests")]
+    pub max_concurrent_requests: Option<u32>,
+    #[serde(default, alias = "queueWaitMs")]
+    pub queue_wait_ms: Option<u64>,
+    #[serde(default, alias = "rateLimitPerMinute")]
+    pub rate_limit_per_minute: Option<u32>,
 
     // stdio transport
     #[serde(default)]
@@ -120,6 +143,94 @@ enum McpTransport {
     StreamableHttp(Box<Mutex<McpHttpInner>>),
 }
 
+#[derive(Debug)]
+struct CircuitBreakerState {
+    threshold: u32,
+    cooldown: Duration,
+    consecutive_failures: u32,
+    open_until: Option<Instant>,
+}
+
+impl CircuitBreakerState {
+    fn new(threshold: u32, cooldown_secs: u64) -> Self {
+        Self {
+            threshold,
+            cooldown: Duration::from_secs(cooldown_secs.max(1)),
+            consecutive_failures: 0,
+            open_until: None,
+        }
+    }
+
+    fn check_ready(&mut self, now: Instant) -> Result<(), u64> {
+        if self.threshold == 0 {
+            return Ok(());
+        }
+        if let Some(open_until) = self.open_until {
+            if now < open_until {
+                return Err((open_until - now).as_secs().max(1));
+            }
+            self.open_until = None;
+            self.consecutive_failures = 0;
+        }
+        Ok(())
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.open_until = None;
+    }
+
+    fn record_failure(&mut self, now: Instant) -> bool {
+        if self.threshold == 0 {
+            return false;
+        }
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures >= self.threshold {
+            self.open_until = Some(now + self.cooldown);
+            self.consecutive_failures = 0;
+            return true;
+        }
+        false
+    }
+}
+
+#[derive(Debug)]
+struct FixedWindowRateLimiter {
+    limit_per_minute: u32,
+    window_started_at: Instant,
+    used_in_window: u32,
+}
+
+impl FixedWindowRateLimiter {
+    fn new(limit_per_minute: u32) -> Self {
+        Self {
+            limit_per_minute,
+            window_started_at: Instant::now(),
+            used_in_window: 0,
+        }
+    }
+
+    fn consume_or_retry_after_secs(&mut self, now: Instant) -> Result<(), u64> {
+        if self.limit_per_minute == 0 {
+            return Ok(());
+        }
+        let window = Duration::from_secs(60);
+        if now.duration_since(self.window_started_at) >= window {
+            self.window_started_at = now;
+            self.used_in_window = 0;
+        }
+        if self.used_in_window < self.limit_per_minute {
+            self.used_in_window = self.used_in_window.saturating_add(1);
+            return Ok(());
+        }
+        let retry_after = window
+            .saturating_sub(now.duration_since(self.window_started_at))
+            .as_secs()
+            .max(1);
+        Err(retry_after)
+    }
+}
+
 pub struct McpServer {
     name: String,
     requested_protocol: String,
@@ -130,6 +241,10 @@ pub struct McpServer {
     stdio_spawn: Option<McpStdioSpawnSpec>,
     tools_cache: StdMutex<Vec<McpToolInfo>>,
     tools_cache_updated_at: StdMutex<Option<Instant>>,
+    circuit_breaker: StdMutex<CircuitBreakerState>,
+    inflight_limiter: Arc<Semaphore>,
+    queue_wait: Duration,
+    rate_limiter: StdMutex<FixedWindowRateLimiter>,
 }
 
 /// Resolve a command name to its full path. On Windows, also checks for
@@ -207,6 +322,7 @@ impl McpServer {
         name: &str,
         config: &McpServerConfig,
         default_protocol_version: Option<&str>,
+        default_request_timeout_secs: u64,
     ) -> Result<Self, String> {
         let requested_protocol = config
             .protocol_version
@@ -214,12 +330,26 @@ impl McpServer {
             .or_else(|| default_protocol_version.map(|v| v.to_string()))
             .unwrap_or_else(|| DEFAULT_PROTOCOL_VERSION.to_string());
 
-        let request_timeout = Duration::from_secs(
-            config
-                .request_timeout_secs
-                .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS),
-        );
+        let request_timeout = Duration::from_secs(resolve_request_timeout_secs(
+            config.request_timeout_secs,
+            default_request_timeout_secs,
+        ));
         let max_retries = config.max_retries.unwrap_or(DEFAULT_MAX_RETRIES);
+        let circuit_breaker_threshold = config
+            .circuit_breaker_failure_threshold
+            .unwrap_or(DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD);
+        let circuit_breaker_cooldown_secs = config
+            .circuit_breaker_cooldown_secs
+            .unwrap_or(DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECS);
+        let max_concurrent_requests = config
+            .max_concurrent_requests
+            .unwrap_or(DEFAULT_MAX_CONCURRENT_REQUESTS)
+            .max(1);
+        let queue_wait =
+            Duration::from_millis(config.queue_wait_ms.unwrap_or(DEFAULT_QUEUE_WAIT_MS).max(1));
+        let rate_limit_per_minute = config
+            .rate_limit_per_minute
+            .unwrap_or(DEFAULT_RATE_LIMIT_PER_MINUTE);
         let transport_name = config.transport.trim().to_ascii_lowercase();
 
         let (transport, stdio_spawn) = match transport_name.as_str() {
@@ -276,6 +406,13 @@ impl McpServer {
             stdio_spawn,
             tools_cache: StdMutex::new(Vec::new()),
             tools_cache_updated_at: StdMutex::new(None),
+            circuit_breaker: StdMutex::new(CircuitBreakerState::new(
+                circuit_breaker_threshold,
+                circuit_breaker_cooldown_secs,
+            )),
+            inflight_limiter: Arc::new(Semaphore::new(max_concurrent_requests as usize)),
+            queue_wait,
+            rate_limiter: StdMutex::new(FixedWindowRateLimiter::new(rate_limit_per_minute)),
         };
 
         server.initialize_connection().await?;
@@ -616,10 +753,66 @@ impl McpServer {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
-        match &self.transport {
+        {
+            let mut rate = self.rate_limiter.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(retry_after_secs) = rate.consume_or_retry_after_secs(Instant::now()) {
+                return Err(format!(
+                    "MCP server '{}' rate-limited; retry in ~{}s",
+                    self.name, retry_after_secs
+                ));
+            }
+        }
+
+        let permit = tokio::time::timeout(
+            self.queue_wait,
+            self.inflight_limiter.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "MCP server '{}' busy; exceeded queue wait of {:?}",
+                self.name, self.queue_wait
+            )
+        })?
+        .map_err(|_| format!("MCP server '{}' limiter is closed", self.name))?;
+
+        let now = Instant::now();
+        {
+            let mut breaker = self
+                .circuit_breaker
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Err(remaining_secs) = breaker.check_ready(now) {
+                return Err(format!(
+                    "MCP server '{}' circuit open; retry in ~{}s",
+                    self.name, remaining_secs
+                ));
+            }
+        }
+
+        let result = match &self.transport {
             McpTransport::Stdio(_) => self.send_request_stdio_with_retries(method, params).await,
             McpTransport::StreamableHttp(_) => self.send_request_http(method, params).await,
+        };
+        drop(permit);
+
+        let mut breaker = self
+            .circuit_breaker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &result {
+            Ok(_) => breaker.record_success(),
+            Err(_) => {
+                if breaker.record_failure(Instant::now()) {
+                    warn!(
+                        "MCP server '{}' circuit opened after consecutive failures",
+                        self.name
+                    );
+                }
+            }
         }
+
+        result
     }
 
     async fn send_notification(
@@ -837,7 +1030,9 @@ pub struct McpManager {
 }
 
 impl McpManager {
-    pub async fn from_config_file(path: &str) -> Self {
+    pub async fn from_config_file(path: &str, default_request_timeout_secs: u64) -> Self {
+        let default_request_timeout_secs =
+            resolve_request_timeout_secs(None, default_request_timeout_secs);
         let config_str = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(_) => {
@@ -867,6 +1062,7 @@ impl McpManager {
                     name,
                     server_config,
                     config.default_protocol_version.as_deref(),
+                    default_request_timeout_secs,
                 ),
             )
             .await
@@ -933,6 +1129,11 @@ mod tests {
         assert_eq!(server.transport, "stdio");
         assert!(server.protocol_version.is_none());
         assert!(server.max_retries.is_none());
+        assert!(server.circuit_breaker_failure_threshold.is_none());
+        assert!(server.circuit_breaker_cooldown_secs.is_none());
+        assert!(server.max_concurrent_requests.is_none());
+        assert!(server.queue_wait_ms.is_none());
+        assert!(server.rate_limit_per_minute.is_none());
     }
 
     #[test]
@@ -964,5 +1165,77 @@ mod tests {
         assert_eq!(remote.endpoint, "http://127.0.0.1:8080/mcp");
         assert_eq!(remote.max_retries, Some(3));
         assert_eq!(remote.health_interval_secs, Some(15));
+    }
+
+    #[test]
+    fn test_resolve_request_timeout_secs_prefers_server_override() {
+        assert_eq!(resolve_request_timeout_secs(Some(25), 90), 25);
+        assert_eq!(resolve_request_timeout_secs(None, 90), 90);
+        assert_eq!(resolve_request_timeout_secs(Some(0), 90), 1);
+        assert_eq!(resolve_request_timeout_secs(None, 0), 1);
+    }
+
+    #[test]
+    fn test_mcp_bulkhead_and_rate_limit_parse() {
+        let json = r#"{
+          "mcpServers": {
+            "remote": {
+              "transport": "streamable_http",
+              "endpoint": "http://127.0.0.1:8080/mcp",
+              "max_concurrent_requests": 6,
+              "queue_wait_ms": 500,
+              "rate_limit_per_minute": 240
+            }
+          }
+        }"#;
+
+        let cfg: McpConfig = serde_json::from_str(json).unwrap();
+        let remote = cfg.mcp_servers.get("remote").unwrap();
+        assert_eq!(remote.max_concurrent_requests, Some(6));
+        assert_eq!(remote.queue_wait_ms, Some(500));
+        assert_eq!(remote.rate_limit_per_minute, Some(240));
+    }
+
+    #[test]
+    fn test_rate_limiter_blocks_after_limit() {
+        let mut limiter = FixedWindowRateLimiter::new(2);
+        let now = Instant::now();
+        assert!(limiter.consume_or_retry_after_secs(now).is_ok());
+        assert!(limiter.consume_or_retry_after_secs(now).is_ok());
+        assert!(limiter.consume_or_retry_after_secs(now).is_err());
+    }
+
+    #[test]
+    fn test_rate_limiter_can_be_disabled() {
+        let mut limiter = FixedWindowRateLimiter::new(0);
+        let now = Instant::now();
+        for _ in 0..10 {
+            assert!(limiter.consume_or_retry_after_secs(now).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_circuit_breaker_trips_and_recovers() {
+        let mut breaker = CircuitBreakerState::new(2, 1);
+        let now = Instant::now();
+
+        assert!(breaker.check_ready(now).is_ok());
+        assert!(!breaker.record_failure(now));
+        assert!(breaker.check_ready(Instant::now()).is_ok());
+        assert!(breaker.record_failure(Instant::now()));
+
+        let blocked = breaker.check_ready(Instant::now());
+        assert!(blocked.is_err());
+
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(breaker.check_ready(Instant::now()).is_ok());
+    }
+
+    #[test]
+    fn test_circuit_breaker_can_be_disabled() {
+        let mut breaker = CircuitBreakerState::new(0, 1);
+        assert!(breaker.check_ready(Instant::now()).is_ok());
+        assert!(!breaker.record_failure(Instant::now()));
+        assert!(breaker.check_ready(Instant::now()).is_ok());
     }
 }

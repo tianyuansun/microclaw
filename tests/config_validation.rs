@@ -27,6 +27,9 @@ fn minimal_config() -> Config {
         control_chat_ids: vec![],
         max_session_messages: 40,
         compact_keep_recent: 20,
+        default_tool_timeout_secs: 30,
+        tool_timeout_overrides: std::collections::HashMap::new(),
+        default_mcp_request_timeout_secs: 120,
         compaction_timeout_secs: 180,
         discord_bot_token: None,
         discord_allowed_channels: vec![],
@@ -77,6 +80,8 @@ fn test_yaml_parse_minimal() {
     ));
     assert_eq!(config.max_session_messages, 40);
     assert_eq!(config.compact_keep_recent, 20);
+    assert_eq!(config.default_tool_timeout_secs, 30);
+    assert_eq!(config.default_mcp_request_timeout_secs, 120);
 }
 
 #[test]

@@ -318,7 +318,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize MCP servers (optional, configured via <data_root>/mcp.json)
     let mcp_config_path = data_root_dir.join("mcp.json").to_string_lossy().to_string();
-    let mcp_manager = mcp::McpManager::from_config_file(&mcp_config_path).await;
+    let mcp_manager =
+        mcp::McpManager::from_config_file(&mcp_config_path, config.mcp_request_timeout_secs())
+            .await;
     let mcp_tool_count: usize = mcp_manager.all_tools().len();
     if mcp_tool_count > 0 {
         info!("MCP initialized: {} tools available", mcp_tool_count);

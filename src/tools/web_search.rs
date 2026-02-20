@@ -4,7 +4,17 @@ use serde_json::json;
 use super::{schema_object, Tool, ToolResult};
 use microclaw_core::llm_types::ToolDefinition;
 
-pub struct WebSearchTool;
+pub struct WebSearchTool {
+    default_timeout_secs: u64,
+}
+
+impl WebSearchTool {
+    pub fn new(default_timeout_secs: u64) -> Self {
+        Self {
+            default_timeout_secs,
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for WebSearchTool {
@@ -22,6 +32,10 @@ impl Tool for WebSearchTool {
                     "query": {
                         "type": "string",
                         "description": "The search query"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (defaults to configured tool timeout budget)"
                     }
                 }),
                 &["query"],
@@ -34,8 +48,12 @@ impl Tool for WebSearchTool {
             Some(q) => q,
             None => return ToolResult::error("Missing required parameter: query".into()),
         };
+        let timeout_secs = input
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(self.default_timeout_secs);
 
-        match microclaw_tools::web_search::search_ddg(query).await {
+        match microclaw_tools::web_search::search_ddg_with_timeout(query, timeout_secs).await {
             Ok(results) => {
                 if results.is_empty() {
                     ToolResult::success("No results found.".into())
@@ -55,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_web_search_definition() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new(15);
         assert_eq!(tool.name(), "web_search");
         let def = tool.definition();
         assert_eq!(def.name, "web_search");
@@ -67,7 +85,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_missing_query() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new(15);
         let result = tool.execute(json!({})).await;
         assert!(result.is_error);
         assert!(result.content.contains("Missing required parameter: query"));
@@ -75,7 +93,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_null_query() {
-        let tool = WebSearchTool;
+        let tool = WebSearchTool::new(15);
         let result = tool.execute(json!({"query": null})).await;
         assert!(result.is_error);
         assert!(result.content.contains("Missing required parameter: query"));

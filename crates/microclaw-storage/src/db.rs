@@ -162,6 +162,9 @@ pub struct MetricsHistoryPoint {
     pub http_requests: i64,
     pub tool_executions: i64,
     pub mcp_calls: i64,
+    pub mcp_rate_limited_rejections: i64,
+    pub mcp_bulkhead_rejections: i64,
+    pub mcp_circuit_open_rejections: i64,
     pub active_sessions: i64,
 }
 
@@ -180,7 +183,7 @@ pub struct AuditLogRecord {
 pub type SessionMetaRow = (String, String, Option<String>, Option<i64>);
 pub type SessionTreeRow = (i64, Option<String>, Option<i64>, String);
 
-const SCHEMA_VERSION_CURRENT: i64 = 9;
+const SCHEMA_VERSION_CURRENT: i64 = 10;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -510,6 +513,9 @@ fn apply_schema_migrations(conn: &Connection) -> Result<(), MicroClawError> {
                 http_requests INTEGER NOT NULL DEFAULT 0,
                 tool_executions INTEGER NOT NULL DEFAULT 0,
                 mcp_calls INTEGER NOT NULL DEFAULT 0,
+                mcp_rate_limited_rejections INTEGER NOT NULL DEFAULT 0,
+                mcp_bulkhead_rejections INTEGER NOT NULL DEFAULT 0,
+                mcp_circuit_open_rejections INTEGER NOT NULL DEFAULT 0,
                 active_sessions INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_metrics_history_ts ON metrics_history(timestamp_ms);",
@@ -565,6 +571,28 @@ fn apply_schema_migrations(conn: &Connection) -> Result<(), MicroClawError> {
         )?;
         set_schema_version(conn, 9)?;
         version = 9;
+    }
+    if version < 10 {
+        if !table_has_column(conn, "metrics_history", "mcp_rate_limited_rejections")? {
+            conn.execute(
+                "ALTER TABLE metrics_history ADD COLUMN mcp_rate_limited_rejections INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !table_has_column(conn, "metrics_history", "mcp_bulkhead_rejections")? {
+            conn.execute(
+                "ALTER TABLE metrics_history ADD COLUMN mcp_bulkhead_rejections INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !table_has_column(conn, "metrics_history", "mcp_circuit_open_rejections")? {
+            conn.execute(
+                "ALTER TABLE metrics_history ADD COLUMN mcp_circuit_open_rejections INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        set_schema_version(conn, 10)?;
+        version = 10;
     }
     if version != SCHEMA_VERSION_CURRENT {
         set_schema_version(conn, SCHEMA_VERSION_CURRENT)?;
@@ -799,6 +827,9 @@ impl Database {
                 http_requests INTEGER NOT NULL DEFAULT 0,
                 tool_executions INTEGER NOT NULL DEFAULT 0,
                 mcp_calls INTEGER NOT NULL DEFAULT 0,
+                mcp_rate_limited_rejections INTEGER NOT NULL DEFAULT 0,
+                mcp_bulkhead_rejections INTEGER NOT NULL DEFAULT 0,
+                mcp_circuit_open_rejections INTEGER NOT NULL DEFAULT 0,
                 active_sessions INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_metrics_history_ts ON metrics_history(timestamp_ms);
@@ -1941,8 +1972,10 @@ impl Database {
         conn.execute(
             "INSERT INTO metrics_history(
                 timestamp_ms, llm_completions, llm_input_tokens, llm_output_tokens,
-                http_requests, tool_executions, mcp_calls, active_sessions
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                http_requests, tool_executions, mcp_calls,
+                mcp_rate_limited_rejections, mcp_bulkhead_rejections, mcp_circuit_open_rejections,
+                active_sessions
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(timestamp_ms) DO UPDATE SET
                 llm_completions = excluded.llm_completions,
                 llm_input_tokens = excluded.llm_input_tokens,
@@ -1950,6 +1983,9 @@ impl Database {
                 http_requests = excluded.http_requests,
                 tool_executions = excluded.tool_executions,
                 mcp_calls = excluded.mcp_calls,
+                mcp_rate_limited_rejections = excluded.mcp_rate_limited_rejections,
+                mcp_bulkhead_rejections = excluded.mcp_bulkhead_rejections,
+                mcp_circuit_open_rejections = excluded.mcp_circuit_open_rejections,
                 active_sessions = excluded.active_sessions",
             params![
                 point.timestamp_ms,
@@ -1959,6 +1995,9 @@ impl Database {
                 point.http_requests,
                 point.tool_executions,
                 point.mcp_calls,
+                point.mcp_rate_limited_rejections,
+                point.mcp_bulkhead_rejections,
+                point.mcp_circuit_open_rejections,
                 point.active_sessions
             ],
         )?;
@@ -1974,7 +2013,9 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT
                 timestamp_ms, llm_completions, llm_input_tokens, llm_output_tokens,
-                http_requests, tool_executions, mcp_calls, active_sessions
+                http_requests, tool_executions, mcp_calls,
+                mcp_rate_limited_rejections, mcp_bulkhead_rejections, mcp_circuit_open_rejections,
+                active_sessions
              FROM metrics_history
              WHERE timestamp_ms >= ?1
              ORDER BY timestamp_ms ASC
@@ -1990,7 +2031,10 @@ impl Database {
                     http_requests: row.get(4)?,
                     tool_executions: row.get(5)?,
                     mcp_calls: row.get(6)?,
-                    active_sessions: row.get(7)?,
+                    mcp_rate_limited_rejections: row.get(7)?,
+                    mcp_bulkhead_rejections: row.get(8)?,
+                    mcp_circuit_open_rejections: row.get(9)?,
+                    active_sessions: row.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -3403,7 +3447,7 @@ mod tests {
             drop(conn);
         }
 
-        for version in [1_i64, 5_i64, 7_i64] {
+        for version in [1_i64, 5_i64, 7_i64, 8_i64] {
             let dir = std::env::temp_dir().join(format!(
                 "microclaw_migration_matrix_{}_{}",
                 version,
@@ -3431,6 +3475,13 @@ mod tests {
             assert!(table_has_column(&conn, "sessions", "fork_point").unwrap());
             assert!(table_has_column(&conn, "api_keys", "expires_at").unwrap());
             assert!(table_has_column(&conn, "api_keys", "rotated_from_key_id").unwrap());
+            assert!(
+                table_has_column(&conn, "metrics_history", "mcp_rate_limited_rejections").unwrap()
+            );
+            assert!(table_has_column(&conn, "metrics_history", "mcp_bulkhead_rejections").unwrap());
+            assert!(
+                table_has_column(&conn, "metrics_history", "mcp_circuit_open_rejections").unwrap()
+            );
             drop(conn);
             cleanup(&dir);
         }
@@ -3444,6 +3495,32 @@ mod tests {
         db.upsert_chat(100, Some("New Title"), "group").unwrap();
         // Insert without title
         db.upsert_chat(200, None, "private").unwrap();
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_metrics_history_roundtrip_with_mcp_rejection_fields() {
+        let (db, dir) = test_db();
+        let point = MetricsHistoryPoint {
+            timestamp_ms: 1_700_000_000_000,
+            llm_completions: 10,
+            llm_input_tokens: 1000,
+            llm_output_tokens: 500,
+            http_requests: 20,
+            tool_executions: 8,
+            mcp_calls: 3,
+            mcp_rate_limited_rejections: 2,
+            mcp_bulkhead_rejections: 1,
+            mcp_circuit_open_rejections: 4,
+            active_sessions: 6,
+        };
+        db.upsert_metrics_history(&point).unwrap();
+        let rows = db.get_metrics_history(point.timestamp_ms, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        let got = &rows[0];
+        assert_eq!(got.mcp_rate_limited_rejections, 2);
+        assert_eq!(got.mcp_bulkhead_rejections, 1);
+        assert_eq!(got.mcp_circuit_open_rejections, 4);
         cleanup(&dir);
     }
 

@@ -95,6 +95,9 @@ struct WebMetrics {
     tool_error: i64,
     tool_policy_blocks: i64,
     mcp_calls: i64,
+    mcp_rate_limited_rejections: i64,
+    mcp_bulkhead_rejections: i64,
+    mcp_circuit_open_rejections: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -478,6 +481,9 @@ async fn persist_metrics_snapshot(state: &WebState) -> Result<(), (StatusCode, S
         http_requests: snapshot.http_requests,
         tool_executions: snapshot.tool_executions,
         mcp_calls: snapshot.mcp_calls,
+        mcp_rate_limited_rejections: snapshot.mcp_rate_limited_rejections,
+        mcp_bulkhead_rejections: snapshot.mcp_bulkhead_rejections,
+        mcp_circuit_open_rejections: snapshot.mcp_circuit_open_rejections,
         active_sessions,
     };
     call_blocking(state.app_state.db.clone(), move |db| {
@@ -502,6 +508,9 @@ async fn persist_metrics_snapshot(state: &WebState) -> Result<(), (StatusCode, S
             llm_output_tokens: snapshot.llm_output_tokens,
             tool_executions: snapshot.tool_executions,
             mcp_calls: snapshot.mcp_calls,
+            mcp_rate_limited_rejections: snapshot.mcp_rate_limited_rejections,
+            mcp_bulkhead_rejections: snapshot.mcp_bulkhead_rejections,
+            mcp_circuit_open_rejections: snapshot.mcp_circuit_open_rejections,
             active_sessions,
         };
         tokio::spawn(async move {
@@ -2096,6 +2105,43 @@ mod tests {
                 .unwrap_or(0)
                 > 0
         );
+        assert!(metrics_json
+            .get("metrics")
+            .and_then(|m| m.get("mcp_rate_limited_rejections"))
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(metrics_json
+            .get("metrics")
+            .and_then(|m| m.get("mcp_bulkhead_rejections"))
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(metrics_json
+            .get("metrics")
+            .and_then(|m| m.get("mcp_circuit_open_rejections"))
+            .and_then(|v| v.as_i64())
+            .is_some());
+
+        let summary_req = Request::builder()
+            .method("GET")
+            .uri("/api/metrics/summary")
+            .body(Body::empty())
+            .unwrap();
+        let summary_resp = app.clone().oneshot(summary_req).await.unwrap();
+        assert_eq!(summary_resp.status(), StatusCode::OK);
+        let summary_body = axum::body::to_bytes(summary_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let summary_json: serde_json::Value = serde_json::from_slice(&summary_body).unwrap();
+        assert!(summary_json
+            .get("summary")
+            .and_then(|m| m.get("mcp_rejections_total"))
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(summary_json
+            .get("summary")
+            .and_then(|m| m.get("mcp_rejection_ratio"))
+            .and_then(|v| v.as_f64())
+            .is_some());
 
         let history_req = Request::builder()
             .method("GET")
@@ -2108,11 +2154,12 @@ mod tests {
             .await
             .unwrap();
         let history_json: serde_json::Value = serde_json::from_slice(&history_body).unwrap();
-        assert!(history_json
+        let points = history_json
             .get("points")
             .and_then(|v| v.as_array())
             .map(|v| !v.is_empty())
-            .unwrap_or(false));
+            .unwrap_or(false);
+        assert!(points);
 
         let summary_req = Request::builder()
             .method("GET")
@@ -2143,6 +2190,26 @@ mod tests {
                 .unwrap_or(0.0)
                 >= 0.0
         );
+
+        let points_vec = history_json
+            .get("points")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(!points_vec.is_empty());
+        let first = &points_vec[0];
+        assert!(first
+            .get("mcp_rate_limited_rejections")
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(first
+            .get("mcp_bulkhead_rejections")
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(first
+            .get("mcp_circuit_open_rejections")
+            .and_then(|v| v.as_i64())
+            .is_some());
     }
 
     #[tokio::test]

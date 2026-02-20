@@ -108,6 +108,16 @@ Trigger rollback (or immediate hotfix branch) when any is true:
 - enforce timeout budgets and retry budgets per tool/mcp
 - improve actionable error hints in UI and CLI
 
+Status update (2026-02-20):
+- Tool/MCP timeout budget policy is implemented.
+- New global defaults:
+  - `default_tool_timeout_secs` (applies when tool input omits `timeout_secs`)
+  - `default_mcp_request_timeout_secs` (fallback for MCP servers without per-server timeout)
+- New per-tool override map:
+  - `tool_timeout_overrides.<tool_name>`
+- Current tools wired to timeout budgets:
+  - `bash`, `browser`, `web_fetch`, `web_search`
+
 ## Milestones
 
 ### M1 (Week 1-2)

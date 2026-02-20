@@ -3,7 +3,7 @@
 ## Endpoints
 
 - `GET /api/metrics`: current counters/gauges snapshot.
-- `GET /api/metrics/summary`: SLO-oriented summary contract.
+- `GET /api/metrics/summary`: SLO-oriented summary contract plus derived reliability summary.
 - `GET /api/metrics/history?minutes=1440&limit=2000`: persisted timeline from SQLite.
 
 ## Fields
@@ -19,6 +19,9 @@
 - `tool_error`
 - `tool_policy_blocks` (excluded from tool reliability denominator)
 - `mcp_calls`
+- `mcp_rate_limited_rejections`
+- `mcp_bulkhead_rejections`
+- `mcp_circuit_open_rejections`
 - `active_sessions`
 
 ## SLO Contract (`/api/metrics/summary`)
@@ -54,6 +57,9 @@ Metrics snapshots are persisted to SQLite `metrics_history` by minute bucket:
 - `http_requests`
 - `tool_executions`
 - `mcp_calls`
+- `mcp_rate_limited_rejections`
+- `mcp_bulkhead_rejections`
+- `mcp_circuit_open_rejections`
 - `active_sessions`
 
 Retention can be configured via:
@@ -68,6 +74,15 @@ channels:
 
 - Traffic last 24h: `/api/metrics/history?minutes=1440`
 - High-load short window: `/api/metrics/history?minutes=60&limit=3600`
+
+`/api/metrics/summary` derived fields:
+- `summary.mcp_rejections_total`
+- `summary.mcp_rejection_ratio`
+
+OTLP export includes corresponding counters:
+- `microclaw_mcp_rate_limited_rejections`
+- `microclaw_mcp_bulkhead_rejections`
+- `microclaw_mcp_circuit_open_rejections`
 
 ## OTLP Exporter
 
