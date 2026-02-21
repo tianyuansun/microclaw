@@ -16,7 +16,7 @@
 > **Note:** This project is under active development. Features may change, and contributions are welcome!
 
 
-An agentic AI assistant for chat surfaces, inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) and incorporating some of its design ideas. MicroClaw uses a channel-agnostic core with platform adapters: it currently supports Telegram, Discord, Slack, Feishu/Lark, and Web, and is designed to add more platforms over time. It works with multiple LLM providers (Anthropic + OpenAI-compatible APIs) and supports full tool execution: run shell commands, read/write/edit files, search codebases, browse the web, schedule tasks, and maintain persistent memory across conversations.
+An agentic AI assistant for chat surfaces, inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) and incorporating some of its design ideas. MicroClaw uses a channel-agnostic core with platform adapters: it currently supports Telegram, Discord, Slack, Feishu/Lark, IRC, and Web, and is designed to add more platforms over time. It works with multiple LLM providers (Anthropic + OpenAI-compatible APIs) and supports full tool execution: run shell commands, read/write/edit files, search codebases, browse the web, schedule tasks, and maintain persistent memory across conversations.
 
 
 <p align="center">
@@ -163,7 +163,7 @@ For a deeper dive into the architecture and design decisions, read: **[Building 
 - **Mention catch-up (Telegram groups)** -- when mentioned in a Telegram group, the bot reads all messages since its last reply (not just the last N)
 - **Continuous typing indicator** -- typing indicator stays active for the full duration of processing
 - **Persistent memory** -- AGENTS.md files at global and per-chat scopes, loaded into every request
-- **Message splitting** -- long responses are automatically split at newline boundaries to fit channel limits (Telegram 4096 / Discord 2000 / Slack 4000 / Feishu 4000)
+- **Message splitting** -- long responses are automatically split at newline boundaries to fit channel limits (Telegram 4096 / Discord 2000 / Slack 4000 / Feishu 4000 / IRC ~380)
 
 ## Tools
 
@@ -243,7 +243,7 @@ When built with `--features sqlite-vec` and embedding config is set, structured-
 MicroClaw now stores a channel-scoped identity for chats:
 
 - `internal chat_id`: SQLite primary key used by sessions/messages/tasks
-- `channel + external_chat_id`: source chat identity from Telegram/Discord/Slack/Feishu/Web
+- `channel + external_chat_id`: source chat identity from Telegram/Discord/Slack/Feishu/IRC/Web
 
 This avoids collisions when different channels can have the same numeric id. Legacy rows are migrated automatically on startup.
 
@@ -424,7 +424,7 @@ Manage tasks with natural language:
 
 When `web_enabled: true`, MicroClaw serves a local Web UI (default `http://127.0.0.1:10961`).
 
-- Session list includes chats from all channels stored in SQLite (`telegram`, `discord`, `slack`, `feishu`, `web`)
+- Session list includes chats from all channels stored in SQLite (`telegram`, `discord`, `slack`, `feishu`, `irc`, `web`)
 - You can review and manage history (refresh / clear context / delete)
 - Non-web channels are read-only in Web UI by default (send from source channel)
 - If there are no sessions yet, Web UI auto-generates a new key like `session-YYYYMMDDHHmmss`
@@ -444,7 +444,7 @@ Publish both installer mode (GitHub Release asset used by `install.sh`) and Home
 
 ### 1. Create channel bot credentials
 
-Enable at least one channel: Telegram, Discord, Slack, Feishu/Lark, or Web UI.
+Enable at least one channel: Telegram, Discord, Slack, Feishu/Lark, IRC, or Web UI.
 
 Telegram (optional):
 1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
@@ -482,6 +482,12 @@ Feishu/Lark (optional):
 3. Enable `im:message` and `im:message.receive_v1` event subscription
 4. Choose connection mode: WebSocket (default, no public URL needed) or Webhook
 5. Configure under `channels.feishu` in config; set `domain: "lark"` for international
+
+IRC (optional):
+1. Prepare an IRC server endpoint, port, and bot nick
+2. Configure under `channels.irc` in config (`server`, `nick`, `channels` are required)
+3. Optional: enable TLS with `tls: "true"` and set `tls_server_name` if needed
+4. Optional: set `mention_required: "false"` if you want replies in channels without mention
 
 ### 2. Get an LLM API key
 
@@ -592,6 +598,15 @@ bot_username: "my_bot"
 #         app_id: "cli_yyy"
 #         app_secret: "yyy"
 #         domain: "lark"
+# recommended IRC mode:
+# channels:
+#   irc:
+#     server: "irc.example.com"
+#     port: "6697"
+#     nick: "microclaw"
+#     channels: "#general,#ops"
+#     tls: "true"
+#     mention_required: "true"
 llm_provider: "anthropic"
 api_key: "sk-ant-..."
 model: "claude-sonnet-4-20250514"
@@ -695,12 +710,23 @@ All configuration is via `microclaw.config.yaml`:
 | `channels.feishu.accounts.<id>.app_secret` | No* | unset | Feishu/Lark app secret for a specific account |
 | `channels.feishu.accounts.<id>.domain` | No | `feishu` | Feishu domain for that account (`feishu`, `lark`, or custom URL) |
 | `channels.feishu.accounts.<id>.allowed_chats` | No | `[]` | Optional Feishu chat allowlist scoped to one account |
+| `channels.irc.server` | No* | unset | IRC server host/IP |
+| `channels.irc.port` | No | `"6667"` | IRC server port |
+| `channels.irc.nick` | No* | unset | IRC bot nick |
+| `channels.irc.username` | No | unset | IRC username (defaults to nick) |
+| `channels.irc.real_name` | No | `"MicroClaw"` | IRC real name (sent in USER command) |
+| `channels.irc.channels` | No* | unset | Comma-separated channel list (for example `#general,#ops`) |
+| `channels.irc.password` | No | unset | Optional IRC server password |
+| `channels.irc.mention_required` | No | `"true"` | In channel chats, require mention before replying |
+| `channels.irc.tls` | No | `"false"` | Enable IRC TLS connection |
+| `channels.irc.tls_server_name` | No | unset | Optional TLS SNI/server name override |
+| `channels.irc.tls_danger_accept_invalid_certs` | No | `"false"` | Accept invalid TLS certs (testing only) |
 
 Path compatibility policy:
 - If `data_dir` / `skills_dir` / `working_dir` are already configured, MicroClaw keeps using those configured paths.
 - If these fields are not configured, defaults are `data_dir=~/.microclaw`, `skills_dir=<data_dir>/skills`, `working_dir=~/.microclaw/working_dir`.
 
-`*` At least one channel must be enabled: legacy channel token fields (`telegram_bot_token`, `discord_bot_token`) or account tokens under `channels.<name>.accounts.<id>`, or `web_enabled: true`.
+`*` At least one channel must be enabled: legacy channel token fields (`telegram_bot_token`, `discord_bot_token`) or account tokens under `channels.<name>.accounts.<id>`, or IRC fields under `channels.irc`, or `web_enabled: true`.
 
 ## Docker Sandbox
 
@@ -762,6 +788,8 @@ Notes:
 - Slack channels: respond on @mention; optionally constrained by `allowed_channels`.
 - Feishu/Lark DMs (p2p): respond to every message.
 - Feishu/Lark groups: respond on @mention; optionally constrained by `allowed_chats`.
+- IRC private messages: respond to every message.
+- IRC channels: by default respond on mention; configurable via `channels.irc.mention_required`.
 
 **Catch-up behavior (Telegram groups):** When mentioned in a group, the bot loads all messages since its last reply in that group (instead of just the last N messages). This means it catches up on everything it missed, making group interactions much more contextual.
 
@@ -836,7 +864,7 @@ src/
     runtime.rs           # Runtime bootstrap + adapter startup
     agent_engine.rs      # Channel-agnostic agent loop
     llm.rs               # Provider abstraction (Anthropic/OpenAI-compatible/Codex)
-    channels/*.rs        # Concrete channel adapters (Telegram/Discord/Slack/Feishu)
+    channels/*.rs        # Concrete channel adapters (Telegram/Discord/Slack/Feishu/IRC)
     tools/*.rs           # Built-in tool implementations + registry assembly
     scheduler.rs         # Background scheduler and reflector loop
     web.rs               # Web API + stream endpoints

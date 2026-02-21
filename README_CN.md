@@ -15,7 +15,7 @@
 > **注意：** 本项目正在积极开发中，功能可能会变化，欢迎贡献！
 
 
-一个住在聊天平台里的 AI 智能助手，灵感来自 [nanoclaw](https://github.com/gavrielc/nanoclaw/)，参考了 nanoclaw 的部分思路。MicroClaw 采用“渠道无关核心 + 平台适配器”架构：当前支持 Telegram、Discord、Slack、飞书/Lark 和 Web，后续可持续扩展更多平台。它支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
+一个住在聊天平台里的 AI 智能助手，灵感来自 [nanoclaw](https://github.com/gavrielc/nanoclaw/)，参考了 nanoclaw 的部分思路。MicroClaw 采用“渠道无关核心 + 平台适配器”架构：当前支持 Telegram、Discord、Slack、飞书/Lark、IRC 和 Web，后续可持续扩展更多平台。它支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
 
 
 <p align="center">
@@ -226,7 +226,7 @@ MicroClaw 通过 `AGENTS.md` 文件维护持久化记忆：
 MicroClaw 现在会保存“按渠道隔离”的聊天身份：
 
 - `internal chat_id`：SQLite 内部主键（用于 sessions/messages/tasks）
-- `channel + external_chat_id`：来自 Telegram/Discord/Slack/飞书/Web 的源聊天身份
+- `channel + external_chat_id`：来自 Telegram/Discord/Slack/飞书/IRC/Web 的源聊天身份
 
 这样可避免不同渠道使用相同数字 id 时发生冲突。历史数据会在启动时自动迁移补齐。
 
@@ -324,7 +324,7 @@ Todo 列表存储在 `<data_dir>/runtime/groups/{chat_id}/TODO.json`，跨会话
 
 当 `web_enabled: true` 时，MicroClaw 会启动本地 Web UI（默认 `http://127.0.0.1:10961`）。
 
-- 左侧会话列表会展示 SQLite 中所有渠道聊天（`telegram`、`discord`、`slack`、`feishu`、`web`）
+- 左侧会话列表会展示 SQLite 中所有渠道聊天（`telegram`、`discord`、`slack`、`feishu`、`irc`、`web`）
 - 支持历史查看与管理（刷新 / 清理上下文 / 删除）
 - 默认对非 `web` 渠道是只读（发送请在原渠道进行）
 - 如果当前没有会话，Web UI 会自动生成一个 `session-YYYYMMDDHHmmss` 格式的会话键
@@ -344,7 +344,7 @@ Todo 列表存储在 `<data_dir>/runtime/groups/{chat_id}/TODO.json`，跨会话
 
 ### 1. 创建渠道机器人凭据
 
-至少启用一个渠道：Telegram、Discord、Slack、飞书/Lark，或 Web UI。
+至少启用一个渠道：Telegram、Discord、Slack、飞书/Lark、IRC，或 Web UI。
 
 Telegram（可选）：
 1. 打开 Telegram，搜索 [@BotFather](https://t.me/BotFather)
@@ -382,6 +382,12 @@ Slack（可选，Socket Mode）：
 3. 开启 `im:message` 和 `im.message.receive_v1` 事件订阅
 4. 选择连接方式：WebSocket 长连接（默认，无需公网地址）或 Webhook
 5. 在配置文件的 `channels.feishu` 下配置；国际版设置 `domain: "lark"`
+
+IRC（可选）：
+1. 准备 IRC 服务器地址、端口和机器人昵称
+2. 在配置文件 `channels.irc` 下配置（`server`、`nick`、`channels` 必填）
+3. 可选：设置 `tls: "true"` 启用 TLS，并按需配置 `tls_server_name`
+4. 可选：设置 `mention_required: "false"`，让机器人在频道中无需提及也可回复
 
 ### 2. 获取 LLM API Key
 
@@ -527,12 +533,23 @@ microclaw gateway uninstall
 | `embedding_base_url` | 否 | provider 默认 | embedding provider base URL 覆盖 |
 | `embedding_model` | 否 | provider 默认 | embedding 模型 ID |
 | `embedding_dim` | 否 | provider 默认 | sqlite-vec 索引使用的向量维度 |
+| `channels.irc.server` | 否* | 未设置 | IRC 服务器地址（域名/IP） |
+| `channels.irc.port` | 否 | `"6667"` | IRC 端口 |
+| `channels.irc.nick` | 否* | 未设置 | IRC 机器人昵称 |
+| `channels.irc.username` | 否 | 未设置 | IRC 用户名（默认同 nick） |
+| `channels.irc.real_name` | 否 | `"MicroClaw"` | IRC real name（USER 命令字段） |
+| `channels.irc.channels` | 否* | 未设置 | 逗号分隔的频道列表（例如 `#general,#ops`） |
+| `channels.irc.password` | 否 | 未设置 | 可选 IRC 服务器密码 |
+| `channels.irc.mention_required` | 否 | `"true"` | 频道中是否要求提及才回复 |
+| `channels.irc.tls` | 否 | `"false"` | 是否启用 IRC TLS |
+| `channels.irc.tls_server_name` | 否 | 未设置 | 可选 TLS SNI/服务名覆盖 |
+| `channels.irc.tls_danger_accept_invalid_certs` | 否 | `"false"` | 是否接受无效证书（仅测试） |
 
 路径兼容策略：
 - 如果用户已经在配置里设置了 `data_dir` / `skills_dir` / `working_dir`，会继续沿用原有路径。
 - 如果未配置，则默认使用 `data_dir=~/.microclaw`、`skills_dir=<data_dir>/skills`、`working_dir=~/.microclaw/working_dir`。
 
-`*` 需要至少启用一个渠道：`telegram_bot_token`、`discord_bot_token`、`channels.slack`、`channels.feishu`，或 `web_enabled: true`。
+`*` 需要至少启用一个渠道：`telegram_bot_token`、`discord_bot_token`、`channels.slack`、`channels.feishu`、`channels.irc`，或 `web_enabled: true`。
 
 ## Docker 沙箱
 
@@ -594,6 +611,8 @@ microclaw start
 - Slack 频道：被 @ 提及时回复；可通过 `allowed_channels` 限定
 - 飞书/Lark 单聊（p2p）：每条消息都会回复
 - 飞书/Lark 群聊：被 @ 提及时回复；可通过 `allowed_chats` 限定
+- IRC 私聊：每条消息都会回复
+- IRC 频道：默认被提及时回复；可通过 `channels.irc.mention_required` 配置
 
 **追赶行为（Telegram 群）：** 被 @ 时，机器人会加载该群上次回复以来的所有消息（而不是仅最近 N 条），使群聊交互更具上下文。
 
