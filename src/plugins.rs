@@ -1241,6 +1241,81 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_manifest_reports_context_provider_errors() {
+        let manifest = PluginManifest {
+            name: "ctxdup".to_string(),
+            enabled: true,
+            commands: vec![],
+            tools: vec![],
+            context_providers: vec![
+                PluginContextProviderSpec {
+                    name: "dup".to_string(),
+                    kind: PluginContextKind::Prompt,
+                    description: String::new(),
+                    content: Some("a".to_string()),
+                    run: None,
+                    max_chars: 100,
+                    permissions: PluginContextPermissions::default(),
+                },
+                PluginContextProviderSpec {
+                    name: "dup".to_string(),
+                    kind: PluginContextKind::Document,
+                    description: String::new(),
+                    content: Some("b".to_string()),
+                    run: None,
+                    max_chars: 100,
+                    permissions: PluginContextPermissions::default(),
+                },
+                PluginContextProviderSpec {
+                    name: "invalid-both".to_string(),
+                    kind: PluginContextKind::Prompt,
+                    description: String::new(),
+                    content: Some("x".to_string()),
+                    run: Some(PluginExecSpec {
+                        command: "echo x".to_string(),
+                        timeout_secs: 3,
+                        execution_policy: None,
+                    }),
+                    max_chars: 100,
+                    permissions: PluginContextPermissions::default(),
+                },
+                PluginContextProviderSpec {
+                    name: "invalid-none".to_string(),
+                    kind: PluginContextKind::Prompt,
+                    description: String::new(),
+                    content: None,
+                    run: None,
+                    max_chars: 100,
+                    permissions: PluginContextPermissions::default(),
+                },
+                PluginContextProviderSpec {
+                    name: "invalid-run-empty".to_string(),
+                    kind: PluginContextKind::Prompt,
+                    description: String::new(),
+                    content: None,
+                    run: Some(PluginExecSpec {
+                        command: "   ".to_string(),
+                        timeout_secs: 3,
+                        execution_policy: None,
+                    }),
+                    max_chars: 100,
+                    permissions: PluginContextPermissions::default(),
+                },
+            ],
+        };
+
+        let mut errors = Vec::new();
+        validate_manifest(&manifest, Path::new("/tmp/ctxdup.yaml"), &mut errors);
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("duplicate context provider")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("must set exactly one of content or run")));
+        assert!(errors.iter().any(|e| e.contains("has empty run.command")));
+    }
+
+    #[test]
     fn test_plugin_admin_requires_control_chat() {
         let root = make_temp_plugins_dir("admin_perm");
         let cfg = config_with_plugins_dir(&root);
@@ -1515,6 +1590,60 @@ context_providers:
 
         let allowed = collect_plugin_context_injections(&cfg, "telegram", 999, "").await;
         assert_eq!(allowed.len(), 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn test_collect_plugin_context_injections_truncates_content() {
+        let root = make_temp_plugins_dir("ctx_truncate");
+        std::fs::write(
+            root.join("ctx.yaml"),
+            r#"
+name: ctxtrim
+enabled: true
+context_providers:
+  - name: trunc
+    kind: prompt
+    max_chars: 10
+    content: "12345678901234567890"
+"#,
+        )
+        .unwrap();
+
+        let cfg = config_with_plugins_dir(&root);
+        let injections = collect_plugin_context_injections(&cfg, "web", 1, "").await;
+        assert_eq!(injections.len(), 1);
+        assert_eq!(injections[0].content, "1234567890");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn test_collect_plugin_context_injections_skips_failed_run_provider() {
+        let root = make_temp_plugins_dir("ctx_failed_run");
+        std::fs::write(
+            root.join("ctx.yaml"),
+            r#"
+name: ctxfail
+enabled: true
+context_providers:
+  - name: good
+    kind: prompt
+    content: "ok"
+  - name: bad-run
+    kind: document
+    run:
+      command: "false"
+      timeout_secs: 3
+      execution_policy: host_only
+"#,
+        )
+        .unwrap();
+
+        let cfg = config_with_plugins_dir(&root);
+        let injections = collect_plugin_context_injections(&cfg, "web", 1, "").await;
+        assert_eq!(injections.len(), 1);
+        assert_eq!(injections[0].provider_name, "good");
+        assert_eq!(injections[0].content, "ok");
         let _ = std::fs::remove_dir_all(root);
     }
 }
