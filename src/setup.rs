@@ -2211,6 +2211,13 @@ fn save_config_yaml(
         yaml.push_str("# Custom base URL (optional)\n");
         yaml.push_str(&format!("llm_base_url: \"{}\"\n", base_url));
     }
+    yaml.push_str("# OpenAI-compatible request body overrides (optional)\n");
+    yaml.push_str("# Use null to unset a default key for selected provider/model.\n");
+    yaml.push_str("# openai_compat_body_overrides: { temperature: 0.2 }\n");
+    yaml.push_str("# openai_compat_body_overrides_by_provider:\n");
+    yaml.push_str("#   deepseek: { top_p: null, reasoning_effort: \"high\" }\n");
+    yaml.push_str("# openai_compat_body_overrides_by_model:\n");
+    yaml.push_str("#   gpt-5.2: { response_format: { type: \"json_object\" } }\n");
 
     yaml.push('\n');
     let data_dir = values

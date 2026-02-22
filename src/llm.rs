@@ -5,6 +5,7 @@ use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::codex_auth::{
@@ -741,12 +742,16 @@ pub struct OpenAiProvider {
     http: reqwest::Client,
     api_key: String,
     codex_account_id: Option<String>,
+    provider: String,
     model: String,
     max_tokens: u32,
     is_openai_codex: bool,
     enable_reasoning_content_bridge: bool,
     enable_thinking_param: bool,
     prefer_max_completion_tokens: bool,
+    openai_compat_body_overrides: HashMap<String, serde_json::Value>,
+    openai_compat_body_overrides_by_provider: HashMap<String, HashMap<String, serde_json::Value>>,
+    openai_compat_body_overrides_by_model: HashMap<String, HashMap<String, serde_json::Value>>,
     chat_url: String,
     responses_url: String,
 }
@@ -793,12 +798,20 @@ impl OpenAiProvider {
             http: reqwest::Client::new(),
             api_key,
             codex_account_id,
+            provider: config.llm_provider.clone(),
             model: config.model.clone(),
             max_tokens: config.max_tokens,
             is_openai_codex,
             enable_reasoning_content_bridge,
             enable_thinking_param,
             prefer_max_completion_tokens: config.llm_provider.eq_ignore_ascii_case("openai"),
+            openai_compat_body_overrides: config.openai_compat_body_overrides.clone(),
+            openai_compat_body_overrides_by_provider: config
+                .openai_compat_body_overrides_by_provider
+                .clone(),
+            openai_compat_body_overrides_by_model: config
+                .openai_compat_body_overrides_by_model
+                .clone(),
             chat_url: format!("{}/chat/completions", base.trim_end_matches('/')),
             responses_url: format!("{}/responses", base.trim_end_matches('/')),
         }
@@ -812,6 +825,38 @@ fn maybe_enable_thinking_param(body: &mut serde_json::Value, enabled: bool) {
     if let Some(obj) = body.as_object_mut() {
         obj.insert("thinking".to_string(), json!({"type": "enabled"}));
     }
+}
+
+fn apply_body_override_map(
+    body: &mut serde_json::Value,
+    overrides: Option<&HashMap<String, serde_json::Value>>,
+) {
+    let Some(overrides) = overrides else {
+        return;
+    };
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    for (key, value) in overrides {
+        if value.is_null() {
+            obj.remove(key);
+        } else {
+            obj.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn apply_openai_compat_body_overrides(
+    body: &mut serde_json::Value,
+    provider: &str,
+    model: &str,
+    global: &HashMap<String, serde_json::Value>,
+    by_provider: &HashMap<String, HashMap<String, serde_json::Value>>,
+    by_model: &HashMap<String, HashMap<String, serde_json::Value>>,
+) {
+    apply_body_override_map(body, Some(global));
+    apply_body_override_map(body, by_provider.get(&provider.to_ascii_lowercase()));
+    apply_body_override_map(body, by_model.get(model));
 }
 
 // --- OpenAI response types ---
@@ -996,6 +1041,17 @@ impl LlmProvider for OpenAiProvider {
             self.prefer_max_completion_tokens,
         );
         maybe_enable_thinking_param(&mut body, self.enable_thinking_param);
+        apply_openai_compat_body_overrides(
+            &mut body,
+            &self.provider,
+            &self.model,
+            &self.openai_compat_body_overrides,
+            &self.openai_compat_body_overrides_by_provider,
+            &self.openai_compat_body_overrides_by_model,
+        );
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("stream");
+        }
 
         if let Some(ref tool_defs) = tools {
             if !tool_defs.is_empty() {
@@ -1117,6 +1173,15 @@ impl LlmProvider for OpenAiProvider {
             self.prefer_max_completion_tokens,
         );
         maybe_enable_thinking_param(&mut body, self.enable_thinking_param);
+        apply_openai_compat_body_overrides(
+            &mut body,
+            &self.provider,
+            &self.model,
+            &self.openai_compat_body_overrides,
+            &self.openai_compat_body_overrides_by_provider,
+            &self.openai_compat_body_overrides_by_model,
+        );
+        body["stream"] = json!(true);
 
         if let Some(ref tool_defs) = tools {
             if !tool_defs.is_empty() {
@@ -1255,6 +1320,15 @@ impl OpenAiProvider {
             "store": false,
             "stream": true,
         });
+        apply_openai_compat_body_overrides(
+            &mut body,
+            &self.provider,
+            &self.model,
+            &self.openai_compat_body_overrides,
+            &self.openai_compat_body_overrides_by_provider,
+            &self.openai_compat_body_overrides_by_model,
+        );
+        body["stream"] = json!(true);
         if let Some(ref tool_defs) = tools {
             if !tool_defs.is_empty() {
                 body["tools"] = json!(translate_tools_to_oai_responses(tool_defs));
@@ -2271,6 +2345,65 @@ mod tests {
         let mut body = json!({"model":"test-model","messages":[]});
         maybe_enable_thinking_param(&mut body, false);
         assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn test_apply_openai_compat_body_overrides_merges_global_provider_model() {
+        let mut body = json!({
+            "model": "gpt-5.2",
+            "temperature": 0.5,
+            "top_p": 0.9,
+            "stream": false
+        });
+        let mut global = HashMap::new();
+        global.insert("temperature".into(), json!(0.2));
+        global.insert("seed".into(), json!(42));
+        let mut by_provider = HashMap::new();
+        by_provider.insert(
+            "openai".into(),
+            HashMap::from([("top_p".into(), json!(0.8))]),
+        );
+        let mut by_model = HashMap::new();
+        by_model.insert(
+            "gpt-5.2".into(),
+            HashMap::from([("stream".into(), json!(true))]),
+        );
+
+        apply_openai_compat_body_overrides(
+            &mut body,
+            "openai",
+            "gpt-5.2",
+            &global,
+            &by_provider,
+            &by_model,
+        );
+
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["top_p"], 0.8);
+        assert_eq!(body["seed"], 42);
+        assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn test_apply_openai_compat_body_overrides_null_unsets_key() {
+        let mut body = json!({"temperature": 0.7, "top_p": 0.9});
+        let mut by_provider = HashMap::new();
+        by_provider.insert(
+            "deepseek".into(),
+            HashMap::from([("top_p".into(), serde_json::Value::Null)]),
+        );
+
+        apply_openai_compat_body_overrides(
+            &mut body,
+            "deepseek",
+            "deepseek-chat",
+            &HashMap::new(),
+            &by_provider,
+            &HashMap::new(),
+        );
+
+        assert!(body.get("top_p").is_none());
+        assert_eq!(body["temperature"], 0.7);
     }
 
     #[test]
