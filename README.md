@@ -706,6 +706,9 @@ All configuration is via `microclaw.config.yaml`:
 | `model` | No | provider-specific | Model name |
 | `model_prices` | No | `[]` | Optional per-model pricing table (USD per 1M tokens) used by `/usage` cost estimates |
 | `llm_base_url` | No | provider preset default | Custom provider base URL |
+| `openai_compat_body_overrides` | No | `{}` | Global request-body overrides for OpenAI-compatible providers (`openai`, `openrouter`, `deepseek`, `ollama`, etc.) |
+| `openai_compat_body_overrides_by_provider` | No | `{}` | Provider-specific OpenAI-compatible request-body overrides (keyed by provider name, case-insensitive) |
+| `openai_compat_body_overrides_by_model` | No | `{}` | Model-specific OpenAI-compatible request-body overrides (keyed by exact model name) |
 | `data_dir` | No | `~/.microclaw` | Data root (`runtime` data in `data_dir/runtime`, skills in `data_dir/skills`) |
 | `working_dir` | No | `~/.microclaw/working_dir` | Default working directory for tool operations; relative paths in `bash/read_file/write_file/edit_file/glob/grep` resolve from here |
 | `working_dir_isolation` | No | `chat` | Working directory isolation mode for `bash/read_file/write_file/edit_file/glob/grep`: `shared` uses `working_dir/shared`, `chat` isolates each chat under `working_dir/chat/<channel>/<chat_id>` |
@@ -750,6 +753,39 @@ Path compatibility policy:
 - If these fields are not configured, defaults are `data_dir=~/.microclaw`, `skills_dir=<data_dir>/skills`, `working_dir=~/.microclaw/working_dir`.
 
 `*` At least one channel must be enabled: legacy channel token fields (`telegram_bot_token`, `discord_bot_token`) or account tokens under `channels.<name>.accounts.<id>`, or IRC fields under `channels.irc`, or `web_enabled: true`.
+
+### OpenAI-compatible body overrides
+
+These fields let you pass custom JSON parameters to OpenAI-compatible `/chat/completions` or `/responses` requests without adding provider-specific code.
+
+Merge order (later wins):
+1. `openai_compat_body_overrides` (global)
+2. `openai_compat_body_overrides_by_provider[llm_provider]`
+3. `openai_compat_body_overrides_by_model[model]`
+
+`null` unsets a key:
+
+```yaml
+llm_provider: "deepseek"
+model: "deepseek-chat"
+
+openai_compat_body_overrides:
+  temperature: 0.2
+
+openai_compat_body_overrides_by_provider:
+  deepseek:
+    top_p: null
+    reasoning_effort: "high"
+
+openai_compat_body_overrides_by_model:
+  deepseek-chat:
+    temperature: 0.0
+```
+
+Notes:
+- `provider` keys are normalized to lowercase (`OPENAI` and `openai` are equivalent).
+- `model` keys are exact-match after trimming.
+- Runtime-controlled fields like stream mode and tool payload may still be set by MicroClaw for the active request path.
 
 ## Docker Sandbox
 
