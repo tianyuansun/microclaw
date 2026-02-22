@@ -598,12 +598,19 @@ async fn start_matrix_e2ee_sync(app_state: Arc<AppState>, runtime: MatrixRuntime
                 let mentioned_bot =
                     is_bot_mentioned_in_mentions(ev.content.mentions.as_ref(), &runtime.bot_user_id);
                 let room_id = room.room_id().to_string();
-                if !runtime.should_process_dm_sender(ev.sender.as_str()) && room.active_members_count() <= 2 {
+                let is_direct = room
+                    .is_direct()
+                    .await
+                    .unwrap_or_else(|_| room.active_members_count() <= 2);
+                if !is_direct && !runtime.should_process_group_room(&room_id) {
+                    return;
+                }
+                if is_direct && !runtime.should_process_dm_sender(ev.sender.as_str()) {
                     return;
                 }
                 let msg = MatrixIncomingMessage {
                     room_id,
-                    is_direct: room.active_members_count() <= 2,
+                    is_direct,
                     sender: ev.sender.to_string(),
                     event_id: ev.event_id.to_string(),
                     body,
@@ -631,7 +638,13 @@ async fn start_matrix_e2ee_sync(app_state: Arc<AppState>, runtime: MatrixRuntime
                     return;
                 };
                 let room_id = room.room_id().to_string();
-                let is_direct = room.active_members_count() <= 2;
+                let is_direct = room
+                    .is_direct()
+                    .await
+                    .unwrap_or_else(|_| room.active_members_count() <= 2);
+                if !is_direct && !runtime.should_process_group_room(&room_id) {
+                    return;
+                }
                 if is_direct && !runtime.should_process_dm_sender(ev.sender.as_str()) {
                     return;
                 }
