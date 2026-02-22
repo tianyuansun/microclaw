@@ -559,28 +559,14 @@ async fn start_matrix_e2ee_sync(app_state: Arc<AppState>, runtime: MatrixRuntime
                 let SyncRoomMessageEvent::Original(ev) = ev else {
                     return;
                 };
-                let body = match &ev.content.msgtype {
-                    MessageType::Text(text) => text.body.clone(),
-                    MessageType::Image(image) => format!("[attachment:m.image] {}", image.body),
-                    MessageType::File(file) => format!("[attachment:m.file] {}", file.body),
-                    MessageType::Audio(audio) => format!("[attachment:m.audio] {}", audio.body),
-                    MessageType::Video(video) => format!("[attachment:m.video] {}", video.body),
-                    _ => return,
+                let Some(body) = normalize_matrix_sdk_message_type(&ev.content.msgtype) else {
+                    return;
                 };
                 if body.trim().is_empty() {
                     return;
                 }
-                let mentioned_bot = ev
-                    .content
-                    .mentions
-                    .as_ref()
-                    .map(|mentions| {
-                        mentions
-                            .user_ids
-                            .iter()
-                            .any(|uid| uid.as_str().eq_ignore_ascii_case(runtime.bot_user_id.as_str()))
-                    })
-                    .unwrap_or(false);
+                let mentioned_bot =
+                    is_bot_mentioned_in_mentions(ev.content.mentions.as_ref(), &runtime.bot_user_id);
                 let room_id = room.room_id().to_string();
                 if !runtime.should_process_dm_sender(ev.sender.as_str()) && room.active_members_count() <= 2 {
                     return;
@@ -830,6 +816,28 @@ fn normalize_matrix_message_body(event: &Value) -> String {
         }
         _ => body.to_string(),
     }
+}
+
+fn normalize_matrix_sdk_message_type(msgtype: &MessageType) -> Option<String> {
+    match msgtype {
+        MessageType::Text(text) => Some(text.body.clone()),
+        MessageType::Image(image) => Some(format!("[attachment:m.image] {}", image.body)),
+        MessageType::File(file) => Some(format!("[attachment:m.file] {}", file.body)),
+        MessageType::Audio(audio) => Some(format!("[attachment:m.audio] {}", audio.body)),
+        MessageType::Video(video) => Some(format!("[attachment:m.video] {}", video.body)),
+        _ => None,
+    }
+}
+
+fn is_bot_mentioned_in_mentions(mentions: Option<&Mentions>, bot_user_id: &str) -> bool {
+    mentions
+        .map(|mentions| {
+            mentions
+                .user_ids
+                .iter()
+                .any(|uid| uid.as_str().eq_ignore_ascii_case(bot_user_id))
+        })
+        .unwrap_or(false)
 }
 
 fn extract_direct_room_ids(payload: &Value) -> std::collections::HashSet<String> {
@@ -1671,9 +1679,18 @@ async fn handle_matrix_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_matrix_user_ids, looks_like_reaction_token, matrix_message_payload_for_text,
-        normalize_matrix_message_body, MatrixRuntimeContext,
+        extract_matrix_user_ids, is_bot_mentioned_in_mentions, looks_like_reaction_token,
+        matrix_mentions_for_text, matrix_message_payload_for_text, matrix_sdk_clients,
+        normalize_matrix_message_body, normalize_matrix_sdk_message_type, MatrixRuntimeContext,
+        Mentions,
     };
+    use matrix_sdk::Client as MatrixSdkClient;
+    use matrix_sdk::ruma::events::room::message::{
+        AudioMessageEventContent, FileMessageEventContent, ImageMessageEventContent, MessageType,
+        TextMessageEventContent, VideoMessageEventContent,
+    };
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
     use serde_json::json;
 
     #[test]
@@ -1770,5 +1787,102 @@ mod tests {
         assert!(runtime.should_process_group_room("!group:localhost"));
         assert!(!runtime.should_process_group_room("!some-dm:localhost"));
         assert!(runtime.should_process_dm_sender("@alice:localhost"));
+    }
+
+    #[test]
+    fn test_matrix_mentions_for_text_parses_user_ids() {
+        let mentions = matrix_mentions_for_text("hello @alice:example.org and @bob:example.org")
+            .expect("mentions");
+        let ids: BTreeSet<String> = mentions
+            .user_ids
+            .iter()
+            .map(|v| v.as_str().to_string())
+            .collect();
+        assert!(ids.contains("@alice:example.org"));
+        assert!(ids.contains("@bob:example.org"));
+    }
+
+    #[test]
+    fn test_matrix_mentions_for_text_ignores_invalid_ids() {
+        let mentions = matrix_mentions_for_text("hello @invalid and @alsoinvalid");
+        assert!(mentions.is_none());
+    }
+
+    #[test]
+    fn test_normalize_matrix_sdk_message_type_text_and_attachments() {
+        let text = normalize_matrix_sdk_message_type(&MessageType::Text(
+            TextMessageEventContent::plain("hello"),
+        ));
+        assert_eq!(text.as_deref(), Some("hello"));
+
+        let image = normalize_matrix_sdk_message_type(&MessageType::Image(
+            ImageMessageEventContent::plain(
+                "photo.png".to_string(),
+                matrix_sdk::ruma::mxc_uri!("mxc://example.org/abc").into(),
+            ),
+        ))
+        .expect("image");
+        assert!(image.contains("[attachment:m.image]"));
+
+        let file = normalize_matrix_sdk_message_type(&MessageType::File(
+            FileMessageEventContent::plain(
+                "file.bin".to_string(),
+                matrix_sdk::ruma::mxc_uri!("mxc://example.org/file").into(),
+            ),
+        ))
+        .expect("file");
+        assert!(file.contains("[attachment:m.file]"));
+
+        let audio = normalize_matrix_sdk_message_type(&MessageType::Audio(
+            AudioMessageEventContent::plain(
+                "sound.ogg".to_string(),
+                matrix_sdk::ruma::mxc_uri!("mxc://example.org/audio").into(),
+            ),
+        ))
+        .expect("audio");
+        assert!(audio.contains("[attachment:m.audio]"));
+
+        let video = normalize_matrix_sdk_message_type(&MessageType::Video(
+            VideoMessageEventContent::plain(
+                "clip.mp4".to_string(),
+                matrix_sdk::ruma::mxc_uri!("mxc://example.org/video").into(),
+            ),
+        ))
+        .expect("video");
+        assert!(video.contains("[attachment:m.video]"));
+    }
+
+    #[test]
+    fn test_is_bot_mentioned_in_mentions() {
+        let bot_user_id = "@bot:example.org";
+        let mention_user_id = bot_user_id.parse().expect("user id");
+        let mentions = Mentions::with_user_ids(vec![mention_user_id]);
+        assert!(is_bot_mentioned_in_mentions(Some(&mentions), bot_user_id));
+        assert!(!is_bot_mentioned_in_mentions(
+            Some(&mentions),
+            "@other:example.org"
+        ));
+        assert!(!is_bot_mentioned_in_mentions(None, bot_user_id));
+    }
+
+    #[tokio::test]
+    async fn test_matrix_sdk_client_registry_roundtrip() {
+        let client = MatrixSdkClient::builder()
+            .homeserver_url("http://localhost:8008")
+            .build()
+            .await
+            .expect("sdk client");
+        let client = Arc::new(client);
+
+        let key = "test.matrix.registry".to_string();
+        {
+            let mut clients = matrix_sdk_clients().write().await;
+            clients.insert(key.clone(), client.clone());
+        }
+
+        let got = matrix_sdk_clients().read().await.get(&key).cloned();
+        assert!(got.is_some());
+
+        matrix_sdk_clients().write().await.remove(&key);
     }
 }
