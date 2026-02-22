@@ -214,6 +214,18 @@ pub struct Config {
     pub default_mcp_request_timeout_secs: u64,
     #[serde(default)]
     pub show_thinking: bool,
+    /// OpenAI-compatible request-body overrides applied for all models/providers.
+    /// Set a key to `null` to remove that field from the outgoing JSON body.
+    #[serde(default)]
+    pub openai_compat_body_overrides: HashMap<String, serde_json::Value>,
+    /// OpenAI-compatible request-body overrides keyed by provider name.
+    /// Provider keys are normalized to lowercase.
+    #[serde(default)]
+    pub openai_compat_body_overrides_by_provider:
+        HashMap<String, HashMap<String, serde_json::Value>>,
+    /// OpenAI-compatible request-body overrides keyed by model name.
+    #[serde(default)]
+    pub openai_compat_body_overrides_by_model: HashMap<String, HashMap<String, serde_json::Value>>,
 
     // --- Paths & environment ---
     #[serde(default = "default_data_dir")]
@@ -473,6 +485,9 @@ impl Config {
             discord_allowed_channels: vec![],
             discord_no_mention: false,
             show_thinking: false,
+            openai_compat_body_overrides: HashMap::new(),
+            openai_compat_body_overrides_by_provider: HashMap::new(),
+            openai_compat_body_overrides_by_model: HashMap::new(),
             web_enabled: true,
             web_host: "127.0.0.1".into(),
             web_port: 10961,
@@ -737,6 +752,40 @@ impl Config {
                 }
             })
             .collect();
+        self.openai_compat_body_overrides =
+            normalize_body_override_params(std::mem::take(&mut self.openai_compat_body_overrides));
+        self.openai_compat_body_overrides_by_provider = self
+            .openai_compat_body_overrides_by_provider
+            .drain()
+            .filter_map(|(provider, params)| {
+                let provider = provider.trim().to_ascii_lowercase();
+                if provider.is_empty() {
+                    return None;
+                }
+                let params = normalize_body_override_params(params);
+                if params.is_empty() {
+                    None
+                } else {
+                    Some((provider, params))
+                }
+            })
+            .collect();
+        self.openai_compat_body_overrides_by_model = self
+            .openai_compat_body_overrides_by_model
+            .drain()
+            .filter_map(|(model, params)| {
+                let model = model.trim().to_string();
+                if model.is_empty() {
+                    return None;
+                }
+                let params = normalize_body_override_params(params);
+                if params.is_empty() {
+                    None
+                } else {
+                    Some((model, params))
+                }
+            })
+            .collect();
         if self.memory_token_budget == 0 {
             self.memory_token_budget = default_memory_token_budget();
         }
@@ -917,6 +966,22 @@ impl Config {
         std::fs::write(path, content)?;
         Ok(())
     }
+}
+
+fn normalize_body_override_params(
+    params: HashMap<String, serde_json::Value>,
+) -> HashMap<String, serde_json::Value> {
+    params
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let key = key.trim().to_string();
+            if key.is_empty() {
+                None
+            } else {
+                Some((key, value))
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1485,6 +1550,58 @@ channels:
         config.post_deserialize().unwrap();
         assert_eq!(config.llm_provider, "anthropic");
         assert_eq!(config.model, "claude-sonnet-4-5-20250929");
+    }
+
+    #[test]
+    fn test_post_deserialize_normalizes_openai_compat_body_overrides() {
+        let yaml = r#"
+telegram_bot_token: tok
+bot_username: bot
+api_key: key
+openai_compat_body_overrides:
+  " temperature ": 0.2
+  "  ": 1
+openai_compat_body_overrides_by_provider:
+  " OPENAI ":
+    " top_p ": 0.95
+    "": 1
+  "  ":
+    seed: 7
+openai_compat_body_overrides_by_model:
+  " gpt-5.2 ":
+    " frequency_penalty ": 0.1
+    "": 1
+  " ":
+    seed: 7
+"#;
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        config.post_deserialize().unwrap();
+
+        assert_eq!(
+            config.openai_compat_body_overrides.get("temperature"),
+            Some(&serde_json::json!(0.2))
+        );
+        assert!(!config.openai_compat_body_overrides.contains_key("  "));
+
+        let provider_params = config
+            .openai_compat_body_overrides_by_provider
+            .get("openai")
+            .unwrap();
+        assert_eq!(provider_params.get("top_p"), Some(&serde_json::json!(0.95)));
+        assert!(!provider_params.contains_key(""));
+        assert!(!config
+            .openai_compat_body_overrides_by_provider
+            .contains_key(" OPENAI "));
+
+        let model_params = config
+            .openai_compat_body_overrides_by_model
+            .get("gpt-5.2")
+            .unwrap();
+        assert_eq!(
+            model_params.get("frequency_penalty"),
+            Some(&serde_json::json!(0.1))
+        );
+        assert!(!model_params.contains_key(""));
     }
 
     #[test]

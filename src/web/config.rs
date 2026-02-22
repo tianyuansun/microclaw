@@ -352,6 +352,15 @@ pub(super) async fn api_update_config(
     if let Some(v) = body.max_tool_iterations {
         cfg.max_tool_iterations = v;
     }
+    if let Some(v) = body.openai_compat_body_overrides {
+        cfg.openai_compat_body_overrides = v;
+    }
+    if let Some(v) = body.openai_compat_body_overrides_by_provider {
+        cfg.openai_compat_body_overrides_by_provider = v;
+    }
+    if let Some(v) = body.openai_compat_body_overrides_by_model {
+        cfg.openai_compat_body_overrides_by_model = v;
+    }
     if let Some(v) = body.max_document_size_mb {
         cfg.max_document_size_mb = v;
     }

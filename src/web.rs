@@ -658,6 +658,11 @@ struct UpdateConfigRequest {
     llm_base_url: Option<Option<String>>,
     max_tokens: Option<u32>,
     max_tool_iterations: Option<usize>,
+    openai_compat_body_overrides: Option<HashMap<String, serde_json::Value>>,
+    openai_compat_body_overrides_by_provider:
+        Option<HashMap<String, HashMap<String, serde_json::Value>>>,
+    openai_compat_body_overrides_by_model:
+        Option<HashMap<String, HashMap<String, serde_json::Value>>>,
     max_document_size_mb: Option<u64>,
     memory_token_budget: Option<usize>,
     embedding_provider: Option<Option<String>>,
