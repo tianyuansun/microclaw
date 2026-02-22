@@ -47,6 +47,19 @@ tools:
     run:
       command: "ls -la"
       timeout_secs: 10
+
+context_providers:
+  - name: policy_prompt
+    kind: prompt
+    content: "Always include a short risk summary for shell actions in channel {{channel}}."
+
+  - name: runbook_doc
+    kind: document
+    permissions:
+      execution_policy: host_only
+    run:
+      command: "cat ./docs/operations/runbook.md"
+      timeout_secs: 10
 ```
 
 ## Notes
@@ -62,3 +75,10 @@ tools:
 - `permissions.require_control_chat: true` requires chat ID to be in `control_chat_ids`.
 - Templates are strict: missing `{{var}}` placeholders fail with a clear error.
 - Control chats can use `/plugins list`, `/plugins validate`, and `/plugins reload`.
+- Context providers can inject extra system context every turn:
+  - `kind: prompt` for behavioral/policy instructions
+  - `kind: document` for reference docs/spec fragments
+  - Exactly one of `content` or `run` must be set.
+  - Template variables: `{{channel}}`, `{{chat_id}}`, `{{query}}`, `{{plugin}}`, `{{provider}}`
+  - `permissions.allowed_channels` and `permissions.require_control_chat` apply here too.
+  - `permissions.execution_policy` can force `sandbox_only` for provider `run` commands.

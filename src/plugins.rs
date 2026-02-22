@@ -24,6 +24,14 @@ fn default_plugin_timeout_secs() -> u64 {
     30
 }
 
+fn default_plugin_context_kind() -> PluginContextKind {
+    PluginContextKind::Prompt
+}
+
+fn default_plugin_context_max_chars() -> usize {
+    6000
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginExecutionPolicy {
@@ -70,6 +78,8 @@ pub struct PluginManifest {
     pub commands: Vec<PluginCommandSpec>,
     #[serde(default)]
     pub tools: Vec<PluginToolSpec>,
+    #[serde(default)]
+    pub context_providers: Vec<PluginContextProviderSpec>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -121,6 +131,48 @@ pub struct PluginToolSpec {
     pub run: PluginExecSpec,
     #[serde(default)]
     pub permissions: PluginToolPermissions,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginContextKind {
+    Prompt,
+    Document,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct PluginContextPermissions {
+    #[serde(default)]
+    pub allowed_channels: Vec<String>,
+    #[serde(default)]
+    pub require_control_chat: bool,
+    #[serde(default)]
+    pub execution_policy: Option<PluginExecutionPolicy>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PluginContextProviderSpec {
+    pub name: String,
+    #[serde(default = "default_plugin_context_kind")]
+    pub kind: PluginContextKind,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub run: Option<PluginExecSpec>,
+    #[serde(default = "default_plugin_context_max_chars")]
+    pub max_chars: usize,
+    #[serde(default)]
+    pub permissions: PluginContextPermissions,
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginContextInjection {
+    pub plugin_name: String,
+    pub provider_name: String,
+    pub kind: PluginContextKind,
+    pub content: String,
 }
 
 #[derive(Clone)]
@@ -242,6 +294,15 @@ fn normalize_manifest(manifest: &mut PluginManifest) {
         tool.description = tool.description.trim().to_string();
         normalize_channels(&mut tool.permissions.allowed_channels);
     }
+    for provider in &mut manifest.context_providers {
+        provider.name = provider.name.trim().to_string();
+        provider.description = provider.description.trim().to_string();
+        provider.max_chars = provider.max_chars.max(1);
+        if let Some(content) = &mut provider.content {
+            *content = content.trim().to_string();
+        }
+        normalize_channels(&mut provider.permissions.allowed_channels);
+    }
 }
 
 fn normalize_channels(channels: &mut Vec<String>) {
@@ -322,6 +383,51 @@ fn validate_manifest(manifest: &PluginManifest, path: &Path, errors: &mut Vec<St
                 manifest.name,
                 tool.name
             ));
+        }
+    }
+
+    let mut provider_names = HashSet::new();
+    for provider in &manifest.context_providers {
+        let normalized = provider.name.to_ascii_lowercase();
+        if normalized.is_empty() {
+            errors.push(format!(
+                "{}: plugin '{}' contains context provider with empty name",
+                path.display(),
+                manifest.name
+            ));
+            continue;
+        }
+        if !provider_names.insert(normalized) {
+            errors.push(format!(
+                "{}: plugin '{}' has duplicate context provider '{}'",
+                path.display(),
+                manifest.name,
+                provider.name
+            ));
+        }
+        let has_content = provider
+            .content
+            .as_ref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        let has_run = provider.run.is_some();
+        if has_content == has_run {
+            errors.push(format!(
+                "{}: plugin '{}' context provider '{}' must set exactly one of content or run",
+                path.display(),
+                manifest.name,
+                provider.name
+            ));
+        }
+        if let Some(run) = &provider.run {
+            if run.command.trim().is_empty() {
+                errors.push(format!(
+                    "{}: plugin '{}' context provider '{}' has empty run.command",
+                    path.display(),
+                    manifest.name,
+                    provider.name
+                ));
+            }
         }
     }
 }
@@ -566,6 +672,96 @@ pub async fn execute_plugin_slash_command(
     }
 
     None
+}
+
+pub async fn collect_plugin_context_injections(
+    config: &Config,
+    caller_channel: &str,
+    caller_chat_id: i64,
+    query: &str,
+) -> Vec<PluginContextInjection> {
+    let mut out = Vec::new();
+    let manifests = load_plugin_manifests(config);
+    for manifest in manifests {
+        for provider in manifest.context_providers {
+            if !is_channel_allowed(caller_channel, &provider.permissions.allowed_channels) {
+                continue;
+            }
+            if provider.permissions.require_control_chat
+                && !config.control_chat_ids.contains(&caller_chat_id)
+            {
+                continue;
+            }
+
+            let mut vars = HashMap::new();
+            vars.insert("channel".to_string(), caller_channel.to_string());
+            vars.insert("chat_id".to_string(), caller_chat_id.to_string());
+            vars.insert("query".to_string(), query.to_string());
+            vars.insert("provider".to_string(), provider.name.clone());
+            vars.insert("plugin".to_string(), manifest.name.clone());
+
+            let result = if let Some(content) = &provider.content {
+                render_template_checked(content, &vars, false).map(|text| SandboxExecResult {
+                    stdout: text,
+                    stderr: String::new(),
+                    exit_code: 0,
+                })
+            } else if let Some(run) = &provider.run {
+                execute_with_template(
+                    config,
+                    caller_channel,
+                    caller_chat_id,
+                    &run.command,
+                    run.timeout_secs,
+                    provider
+                        .permissions
+                        .execution_policy
+                        .or(run.execution_policy)
+                        .unwrap_or(PluginExecutionPolicy::HostOnly),
+                    &vars,
+                )
+                .await
+            } else {
+                continue;
+            };
+
+            match result {
+                Ok(exec_result) => {
+                    if exec_result.exit_code != 0 {
+                        warn!(
+                            plugin = manifest.name.as_str(),
+                            provider = provider.name.as_str(),
+                            exit_code = exec_result.exit_code,
+                            "plugin context provider returned non-zero exit code"
+                        );
+                        continue;
+                    }
+                    let mut content = exec_result.stdout.trim().to_string();
+                    if content.is_empty() {
+                        continue;
+                    }
+                    if content.len() > provider.max_chars {
+                        content.truncate(provider.max_chars);
+                    }
+                    out.push(PluginContextInjection {
+                        plugin_name: manifest.name.clone(),
+                        provider_name: provider.name,
+                        kind: provider.kind,
+                        content,
+                    });
+                }
+                Err(e) => {
+                    warn!(
+                        plugin = manifest.name.as_str(),
+                        provider = provider.name.as_str(),
+                        error = %e,
+                        "plugin context provider execution failed"
+                    );
+                }
+            }
+        }
+    }
+    out
 }
 
 fn is_channel_allowed(channel: &str, allowed: &[String]) -> bool {
@@ -966,6 +1162,7 @@ mod tests {
                 },
             }],
             tools: vec![],
+            context_providers: vec![],
         };
         normalize_manifest(&mut manifest);
         assert_eq!(manifest.name, "demo");
@@ -1033,6 +1230,7 @@ mod tests {
                     permissions: PluginToolPermissions::default(),
                 },
             ],
+            context_providers: vec![],
         };
 
         let mut errors = Vec::new();
@@ -1249,6 +1447,74 @@ commands:
             .errors
             .iter()
             .any(|e| e.contains("duplicate plugin name")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn test_collect_plugin_context_injections_static_and_run() {
+        let root = make_temp_plugins_dir("ctx_static_run");
+        std::fs::write(
+            root.join("ctx.yaml"),
+            r#"
+name: ctxplug
+enabled: true
+context_providers:
+  - name: prompt-static
+    kind: prompt
+    content: "Prompt for {{channel}} q={{query}}"
+  - name: doc-run
+    kind: document
+    run:
+      command: "printf 'Doc for chat=%s' {{chat_id}}"
+      timeout_secs: 5
+      execution_policy: host_only
+"#,
+        )
+        .unwrap();
+
+        let cfg = config_with_plugins_dir(&root);
+        let injections = collect_plugin_context_injections(&cfg, "web", 88, "status now").await;
+        assert_eq!(injections.len(), 2);
+        assert!(injections
+            .iter()
+            .any(|i| i.kind == PluginContextKind::Prompt && i.content.contains("q=status now")));
+        assert!(injections
+            .iter()
+            .any(|i| i.kind == PluginContextKind::Document && i.content.contains("chat=88")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn test_collect_plugin_context_injections_permissions() {
+        let root = make_temp_plugins_dir("ctx_perms");
+        std::fs::write(
+            root.join("ctx.yaml"),
+            r#"
+name: ctxsecure
+enabled: true
+context_providers:
+  - name: only-telegram
+    kind: prompt
+    content: "telegram-only"
+    permissions:
+      allowed_channels: ["telegram"]
+  - name: control-only
+    kind: prompt
+    content: "control-only"
+    permissions:
+      require_control_chat: true
+"#,
+        )
+        .unwrap();
+
+        let mut cfg = config_with_plugins_dir(&root);
+        cfg.control_chat_ids = vec![999];
+
+        let denied = collect_plugin_context_injections(&cfg, "web", 1, "").await;
+        assert!(denied.is_empty());
+
+        let allowed = collect_plugin_context_injections(&cfg, "telegram", 999, "").await;
+        assert_eq!(allowed.len(), 2);
         let _ = std::fs::remove_dir_all(root);
     }
 }

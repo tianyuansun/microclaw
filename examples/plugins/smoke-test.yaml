@@ -73,3 +73,15 @@ tools:
     run:
       command: "id -u"
       timeout_secs: 10
+
+context_providers:
+  - name: smoke_prompt
+    kind: prompt
+    content: "Plugin smoke context active for {{channel}}/{{chat_id}}."
+
+  - name: smoke_document
+    kind: document
+    run:
+      command: "printf 'Smoke doc: latest query=%s\\n' {{query}}"
+      timeout_secs: 10
+      execution_policy: host_only
