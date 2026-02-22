@@ -818,14 +818,6 @@ fn json_to_yaml_value(v: &serde_json::Value) -> serde_yaml::Value {
     }
 }
 
-/// Channel secret field names to redact in API responses.
-/// Adding a new channel only requires adding an entry here.
-const CHANNEL_SECRET_FIELDS: &[(&str, &[&str])] = &[
-    ("slack", &["bot_token", "app_token"]),
-    ("feishu", &["app_secret"]),
-    ("irc", &["password"]),
-];
-
 fn config_path_for_save() -> Result<PathBuf, (StatusCode, String)> {
     match Config::resolve_config_path() {
         Ok(Some(path)) => Ok(path),
@@ -834,42 +826,60 @@ fn config_path_for_save() -> Result<PathBuf, (StatusCode, String)> {
     }
 }
 
-fn redact_config(config: &Config) -> serde_json::Value {
-    let mut cfg = config.clone();
-    if !cfg.telegram_bot_token.is_empty() {
-        cfg.telegram_bot_token = "***".into();
+fn is_sensitive_config_key(key: &str) -> bool {
+    let k = key.trim().to_ascii_lowercase();
+    if k.is_empty() {
+        return false;
     }
-    if !cfg.api_key.is_empty() {
-        cfg.api_key = "***".into();
+    let exact = [
+        "api_key",
+        "openai_api_key",
+        "embedding_api_key",
+        "web_auth_token",
+        "telegram_bot_token",
+        "discord_bot_token",
+        "bot_token",
+        "app_token",
+        "auth_token",
+        "token",
+        "secret",
+        "password",
+        "app_secret",
+        "clawhub_token",
+    ];
+    if exact.contains(&k.as_str()) {
+        return true;
     }
-    if cfg.openai_api_key.is_some() {
-        cfg.openai_api_key = Some("***".into());
-    }
-    if cfg.discord_bot_token.is_some() {
-        cfg.discord_bot_token = Some("***".into());
-    }
-    if cfg.embedding_api_key.is_some() {
-        cfg.embedding_api_key = Some("***".into());
-    }
-    if cfg.web_auth_token.is_some() {
-        cfg.web_auth_token = Some("***".into());
-    }
+    k.ends_with("_token")
+        || k.ends_with("_secret")
+        || k.ends_with("_password")
+        || k.ends_with("_api_key")
+}
 
-    // Redact secrets in channels map using declarative list
-    for (channel_name, secret_fields) in CHANNEL_SECRET_FIELDS {
-        if let Some(channel_val) = cfg.channels.get_mut(*channel_name) {
-            if let Some(map) = channel_val.as_mapping_mut() {
-                for field in *secret_fields {
-                    let key = serde_yaml::Value::String((*field).to_string());
-                    if map.contains_key(&key) {
-                        map.insert(key, serde_yaml::Value::String("***".into()));
-                    }
-                }
+fn redact_json_secrets(value: &mut serde_json::Value, parent_key: Option<&str>) {
+    if parent_key.is_some_and(is_sensitive_config_key) {
+        *value = serde_json::Value::String("***".to_string());
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                redact_json_secrets(v, Some(k.as_str()));
             }
         }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_json_secrets(item, parent_key);
+            }
+        }
+        _ => {}
     }
+}
 
-    json!(cfg)
+fn redact_config(config: &Config) -> serde_json::Value {
+    let mut value = json!(config);
+    redact_json_secrets(&mut value, None);
+    value
 }
 
 async fn index() -> impl IntoResponse {
@@ -2667,5 +2677,51 @@ mod tests {
             .unwrap();
         let foreign_status_resp = app.oneshot(foreign_status_req).await.unwrap();
         assert_eq!(foreign_status_resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_redact_config_recursively_masks_nested_and_flattened_secrets() {
+        let mut cfg = test_config_template();
+        cfg.clawhub.token = Some("clawhub-secret".to_string());
+        cfg.channels.insert(
+            "discord".to_string(),
+            serde_yaml::to_value(json!({
+                "accounts": {
+                    "main": {
+                        "bot_token": "discord-secret-token"
+                    }
+                }
+            }))
+            .unwrap(),
+        );
+        cfg.channels.insert(
+            "web".to_string(),
+            serde_yaml::to_value(json!({
+                "auth_token": "web-auth-secret"
+            }))
+            .unwrap(),
+        );
+
+        let redacted = redact_config(&cfg);
+        assert_eq!(
+            redacted.get("clawhub_token").and_then(|v| v.as_str()),
+            Some("***")
+        );
+        assert_eq!(
+            redacted
+                .pointer("/channels/discord/accounts/main/bot_token")
+                .and_then(|v| v.as_str()),
+            Some("***")
+        );
+        assert_eq!(
+            redacted
+                .pointer("/channels/web/auth_token")
+                .and_then(|v| v.as_str()),
+            Some("***")
+        );
+        assert_eq!(
+            redacted.get("max_tokens").and_then(|v| v.as_u64()),
+            Some(cfg.max_tokens as u64)
+        );
     }
 }
