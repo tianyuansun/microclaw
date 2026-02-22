@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::AgentEvent;
 use crate::agent_engine::AgentRequestContext;
+use crate::channels::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use crate::chat_commands::handle_chat_command;
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
@@ -17,6 +18,41 @@ use microclaw_channels::channel_adapter::ChannelAdapter;
 use microclaw_core::text::split_text;
 use microclaw_storage::db::call_blocking;
 use microclaw_storage::db::StoredMessage;
+
+pub const SETUP_DEF: DynamicChannelDef = DynamicChannelDef {
+    name: "slack",
+    presence_keys: &["bot_token", "app_token"],
+    fields: &[
+        ChannelFieldDef {
+            yaml_key: "bot_token",
+            label: "Slack bot token (xoxb-...)",
+            default: "",
+            secret: true,
+            required: true,
+        },
+        ChannelFieldDef {
+            yaml_key: "app_token",
+            label: "Slack app token (xapp-...)",
+            default: "",
+            secret: true,
+            required: true,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_username",
+            label: "Slack bot username override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "model",
+            label: "Slack bot model override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+    ],
+};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SlackAccountConfig {

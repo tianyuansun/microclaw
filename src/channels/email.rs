@@ -10,12 +10,69 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::{AgentEvent, AgentRequestContext};
+use crate::channels::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use crate::chat_commands::handle_chat_command;
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel_adapter::ChannelAdapter;
 use microclaw_core::text::split_text;
 use microclaw_storage::db::{call_blocking, StoredMessage};
+
+pub const SETUP_DEF: DynamicChannelDef = DynamicChannelDef {
+    name: "email",
+    presence_keys: &["from_address"],
+    fields: &[
+        ChannelFieldDef {
+            yaml_key: "from_address",
+            label: "Email from address",
+            default: "",
+            secret: false,
+            required: true,
+        },
+        ChannelFieldDef {
+            yaml_key: "sendmail_path",
+            label: "sendmail path (default /usr/sbin/sendmail)",
+            default: "/usr/sbin/sendmail",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_path",
+            label: "Email webhook path (default /email/webhook)",
+            default: "/email/webhook",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_token",
+            label: "Email webhook token (optional)",
+            default: "",
+            secret: true,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "allowed_senders",
+            label: "Email allowed senders csv (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_username",
+            label: "Email bot username override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "model",
+            label: "Email bot model override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+    ],
+};
 
 fn default_enabled() -> bool {
     true

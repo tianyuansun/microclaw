@@ -26,6 +26,7 @@ use crate::agent_engine::archive_conversation;
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::AgentEvent;
 use crate::agent_engine::AgentRequestContext;
+use crate::channels::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel_adapter::ChannelAdapter;
@@ -34,6 +35,41 @@ use microclaw_core::text::split_text;
 use microclaw_storage::db::call_blocking;
 use microclaw_storage::db::StoredMessage;
 use microclaw_storage::usage::build_usage_report;
+
+pub const SETUP_DEF: DynamicChannelDef = DynamicChannelDef {
+    name: "matrix",
+    presence_keys: &["homeserver_url", "access_token", "bot_user_id"],
+    fields: &[
+        ChannelFieldDef {
+            yaml_key: "homeserver_url",
+            label: "Matrix homeserver URL (e.g. https://matrix.org)",
+            default: "",
+            secret: false,
+            required: true,
+        },
+        ChannelFieldDef {
+            yaml_key: "access_token",
+            label: "Matrix access token",
+            default: "",
+            secret: true,
+            required: true,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_user_id",
+            label: "Matrix bot user ID (e.g. @bot:example.org)",
+            default: "",
+            secret: false,
+            required: true,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_username",
+            label: "Matrix bot username override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+    ],
+};
 
 fn default_enabled() -> bool {
     true

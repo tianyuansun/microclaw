@@ -7,6 +7,7 @@ pub mod irc;
 pub mod matrix;
 pub mod nostr;
 pub mod qq;
+pub mod setup_def;
 pub mod signal;
 pub mod slack;
 pub mod telegram;

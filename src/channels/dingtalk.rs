@@ -8,11 +8,61 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::{AgentEvent, AgentRequestContext};
+use crate::channels::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use crate::chat_commands::handle_chat_command;
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel_adapter::ChannelAdapter;
 use microclaw_storage::db::{call_blocking, StoredMessage};
+
+pub const SETUP_DEF: DynamicChannelDef = DynamicChannelDef {
+    name: "dingtalk",
+    presence_keys: &["robot_webhook_url"],
+    fields: &[
+        ChannelFieldDef {
+            yaml_key: "robot_webhook_url",
+            label: "DingTalk robot webhook URL",
+            default: "",
+            secret: true,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_path",
+            label: "DingTalk webhook path (default /dingtalk/events)",
+            default: "/dingtalk/events",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_token",
+            label: "DingTalk webhook token (optional)",
+            default: "",
+            secret: true,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "allowed_chat_ids",
+            label: "DingTalk allowed chat ids csv (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_username",
+            label: "DingTalk bot username override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "model",
+            label: "DingTalk bot model override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+    ],
+};
 
 fn default_enabled() -> bool {
     true

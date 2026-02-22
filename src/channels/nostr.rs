@@ -9,11 +9,61 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::{AgentEvent, AgentRequestContext};
+use crate::channels::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use crate::chat_commands::handle_chat_command;
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel_adapter::ChannelAdapter;
 use microclaw_storage::db::{call_blocking, StoredMessage};
+
+pub const SETUP_DEF: DynamicChannelDef = DynamicChannelDef {
+    name: "nostr",
+    presence_keys: &["publish_command"],
+    fields: &[
+        ChannelFieldDef {
+            yaml_key: "publish_command",
+            label: "Nostr publish command (reads env MICROCLAW_NOSTR_TARGET/TEXT)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_path",
+            label: "Nostr webhook path (default /nostr/events)",
+            default: "/nostr/events",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_token",
+            label: "Nostr webhook token (optional)",
+            default: "",
+            secret: true,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "allowed_pubkeys",
+            label: "Nostr allowed pubkeys csv (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_username",
+            label: "Nostr bot username override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "model",
+            label: "Nostr bot model override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+    ],
+};
 
 fn default_enabled() -> bool {
     true

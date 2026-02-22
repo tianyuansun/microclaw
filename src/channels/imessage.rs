@@ -5,10 +5,39 @@ use std::sync::Arc;
 use serde::Deserialize;
 use tracing::{error, info};
 
+use crate::channels::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel_adapter::ChannelAdapter;
 use microclaw_core::text::split_text;
+
+pub const SETUP_DEF: DynamicChannelDef = DynamicChannelDef {
+    name: "imessage",
+    presence_keys: &["service"],
+    fields: &[
+        ChannelFieldDef {
+            yaml_key: "service",
+            label: "iMessage service type (default iMessage)",
+            default: "iMessage",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_username",
+            label: "iMessage bot username override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "model",
+            label: "iMessage bot model override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+    ],
+};
 
 fn default_enabled() -> bool {
     true

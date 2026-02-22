@@ -9,12 +9,76 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::{AgentEvent, AgentRequestContext};
+use crate::channels::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use crate::chat_commands::handle_chat_command;
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel_adapter::ChannelAdapter;
 use microclaw_core::text::split_text;
 use microclaw_storage::db::{call_blocking, StoredMessage};
+
+pub const SETUP_DEF: DynamicChannelDef = DynamicChannelDef {
+    name: "whatsapp",
+    presence_keys: &["access_token", "phone_number_id"],
+    fields: &[
+        ChannelFieldDef {
+            yaml_key: "access_token",
+            label: "WhatsApp Cloud API access token",
+            default: "",
+            secret: true,
+            required: true,
+        },
+        ChannelFieldDef {
+            yaml_key: "phone_number_id",
+            label: "WhatsApp phone number ID",
+            default: "",
+            secret: false,
+            required: true,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_verify_token",
+            label: "WhatsApp webhook verify token (optional)",
+            default: "",
+            secret: true,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "api_version",
+            label: "WhatsApp Graph API version (default v21.0)",
+            default: "v21.0",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_path",
+            label: "WhatsApp webhook path (default /whatsapp/webhook)",
+            default: "/whatsapp/webhook",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "allowed_user_ids",
+            label: "WhatsApp allowed user ids csv (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_username",
+            label: "WhatsApp bot username override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "model",
+            label: "WhatsApp bot model override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+    ],
+};
 
 fn default_enabled() -> bool {
     true

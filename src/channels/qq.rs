@@ -9,11 +9,61 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::{AgentEvent, AgentRequestContext};
+use crate::channels::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use crate::chat_commands::handle_chat_command;
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel_adapter::ChannelAdapter;
 use microclaw_storage::db::{call_blocking, StoredMessage};
+
+pub const SETUP_DEF: DynamicChannelDef = DynamicChannelDef {
+    name: "qq",
+    presence_keys: &["send_command"],
+    fields: &[
+        ChannelFieldDef {
+            yaml_key: "send_command",
+            label: "QQ send command (env MICROCLAW_QQ_TARGET/TEXT)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_path",
+            label: "QQ webhook path (default /qq/events)",
+            default: "/qq/events",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "webhook_token",
+            label: "QQ webhook token (optional)",
+            default: "",
+            secret: true,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "allowed_user_ids",
+            label: "QQ allowed user ids csv (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "bot_username",
+            label: "QQ bot username override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+        ChannelFieldDef {
+            yaml_key: "model",
+            label: "QQ bot model override (optional)",
+            default: "",
+            secret: false,
+            required: false,
+        },
+    ],
+};
 
 fn default_enabled() -> bool {
     true
