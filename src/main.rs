@@ -11,17 +11,13 @@ use tracing::info;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LONG_ABOUT: &str = concat!(
-    "MicroClaw v",
+    "\x1b[1mMicroClaw v",
     env!("CARGO_PKG_VERSION"),
-    r#"
-
-Quick Start:
-  1) microclaw setup
-  2) microclaw doctor
-  3) microclaw start
-
-More:
-  https://microclaw.ai"#
+    " https://microclaw.ai\x1b[22m\n\n",
+    "\x1b[1mQuick Start:\x1b[22m\n",
+    "  1) microclaw setup\n",
+    "  2) microclaw doctor\n",
+    "  3) microclaw start",
 );
 
 #[derive(Debug, Parser)]
