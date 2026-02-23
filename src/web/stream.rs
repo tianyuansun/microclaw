@@ -16,7 +16,11 @@ pub(super) async fn api_send_stream(
     }
 
     let session_key = normalize_session_key(body.session_key.as_deref());
-    if let Err((status, msg)) = state.request_hub.begin(&session_key, &state.limits).await {
+    if let Err((status, msg)) = state
+        .request_hub
+        .begin(&session_key, &identity.actor, &state.limits)
+        .await
+    {
         info!(
             target: "web",
             endpoint = "/api/send_stream",
@@ -198,7 +202,7 @@ pub(super) async fn api_send_stream(
         let _ = forward.await;
         state_for_task
             .request_hub
-            .end_with_limits(&session_key_for_release, &limits)
+            .end_with_limits(&session_key_for_release, &identity.actor, &limits)
             .await;
         info!(
             target: "web",

@@ -272,7 +272,7 @@ pub(super) async fn api_auth_revoke_api_key(
     Path(key_id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     metrics_http_inc(&state).await;
-    let identity = require_scope(&state, &headers, AuthScope::Approvals).await?;
+    let identity = require_scope(&state, &headers, AuthScope::Admin).await?;
     let revoked = call_blocking(state.app_state.db.clone(), move |db| {
         db.revoke_api_key(key_id)
     })
@@ -298,7 +298,7 @@ pub(super) async fn api_auth_rotate_api_key(
     Json(body): Json<RotateApiKeyRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     metrics_http_inc(&state).await;
-    let identity = require_scope(&state, &headers, AuthScope::Approvals).await?;
+    let identity = require_scope(&state, &headers, AuthScope::Admin).await?;
     let keys = call_blocking(state.app_state.db.clone(), |db| db.list_api_keys())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
