@@ -157,7 +157,13 @@ impl WebLimits {
 
 #[derive(Clone, Default)]
 struct RequestHub {
-    sessions: Arc<Mutex<HashMap<String, SessionQuota>>>,
+    quotas: Arc<Mutex<RequestQuotas>>,
+}
+
+#[derive(Default)]
+struct RequestQuotas {
+    sessions: HashMap<String, SessionQuota>,
+    actors: HashMap<String, SessionQuota>,
 }
 
 struct SessionQuota {
@@ -328,16 +334,9 @@ impl SessionHub {
 }
 
 impl RequestHub {
-    async fn begin(
-        &self,
-        session_key: &str,
-        limits: &WebLimits,
-    ) -> Result<(), (StatusCode, String)> {
-        let now = Instant::now();
-        let mut guard = self.sessions.lock().await;
-        let quota = guard.entry(session_key.to_string()).or_default();
-        quota.last_touch = now;
+    const MAX_BUCKET_KEYS: usize = 4096;
 
+    fn prune_quota(quota: &mut SessionQuota, now: Instant, limits: &WebLimits) {
         while let Some(ts) = quota.recent.front() {
             if now.duration_since(*ts) > limits.rate_window {
                 let _ = quota.recent.pop_front();
@@ -345,45 +344,109 @@ impl RequestHub {
                 break;
             }
         }
+    }
 
-        if quota.inflight >= limits.max_inflight_per_session {
+    fn prune_map(map: &mut HashMap<String, SessionQuota>, now: Instant, limits: &WebLimits) {
+        map.retain(|_, quota| {
+            Self::prune_quota(quota, now, limits);
+            quota.inflight != 0
+                || (!quota.recent.is_empty()
+                    && now.duration_since(quota.last_touch) <= limits.session_idle_ttl)
+        });
+    }
+
+    async fn active_sessions(&self) -> usize {
+        self.quotas.lock().await.sessions.len()
+    }
+
+    async fn begin(
+        &self,
+        session_key: &str,
+        actor: &str,
+        limits: &WebLimits,
+    ) -> Result<(), (StatusCode, String)> {
+        let now = Instant::now();
+        let mut guard = self.quotas.lock().await;
+        Self::prune_map(&mut guard.sessions, now, limits);
+        Self::prune_map(&mut guard.actors, now, limits);
+
+        if !guard.sessions.contains_key(session_key)
+            && guard.sessions.len() >= Self::MAX_BUCKET_KEYS
+        {
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
-                "too many concurrent requests for session".into(),
+                "too many active session limiter buckets".into(),
             ));
         }
-        if quota.recent.len() >= limits.max_requests_per_window {
+        if !guard.actors.contains_key(actor) && guard.actors.len() >= Self::MAX_BUCKET_KEYS {
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
-                "rate limit exceeded for session".into(),
+                "too many active actor limiter buckets".into(),
             ));
         }
 
-        quota.inflight += 1;
-        quota.recent.push_back(now);
+        {
+            let session_quota = guard.sessions.entry(session_key.to_string()).or_default();
+            Self::prune_quota(session_quota, now, limits);
+            session_quota.last_touch = now;
+            if session_quota.inflight >= limits.max_inflight_per_session {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many concurrent requests for session".into(),
+                ));
+            }
+            if session_quota.recent.len() >= limits.max_requests_per_window {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate limit exceeded for session".into(),
+                ));
+            }
+        }
+
+        {
+            let actor_quota = guard.actors.entry(actor.to_string()).or_default();
+            Self::prune_quota(actor_quota, now, limits);
+            actor_quota.last_touch = now;
+            if actor_quota.inflight >= limits.max_inflight_per_session {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many concurrent requests for actor".into(),
+                ));
+            }
+            if actor_quota.recent.len() >= limits.max_requests_per_window {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate limit exceeded for actor".into(),
+                ));
+            }
+        }
+
+        if let Some(session_quota) = guard.sessions.get_mut(session_key) {
+            session_quota.inflight += 1;
+            session_quota.recent.push_back(now);
+        }
+        if let Some(actor_quota) = guard.actors.get_mut(actor) {
+            actor_quota.inflight += 1;
+            actor_quota.recent.push_back(now);
+        }
         Ok(())
     }
 
-    async fn end_with_limits(&self, session_key: &str, limits: &WebLimits) {
+    async fn end_with_limits(&self, session_key: &str, actor: &str, limits: &WebLimits) {
         let now = Instant::now();
-        let mut guard = self.sessions.lock().await;
-        if let Some(quota) = guard.get_mut(session_key) {
-            while let Some(ts) = quota.recent.front() {
-                if now.duration_since(*ts) > limits.rate_window {
-                    let _ = quota.recent.pop_front();
-                } else {
-                    break;
-                }
-            }
+        let mut guard = self.quotas.lock().await;
+        if let Some(quota) = guard.sessions.get_mut(session_key) {
+            Self::prune_quota(quota, now, limits);
             quota.inflight = quota.inflight.saturating_sub(1);
             quota.last_touch = now;
-            if quota.inflight == 0 && quota.recent.is_empty() {
-                guard.remove(session_key);
-            }
         }
-        guard.retain(|_, quota| {
-            !(quota.inflight == 0 && now.duration_since(quota.last_touch) > limits.session_idle_ttl)
-        });
+        if let Some(quota) = guard.actors.get_mut(actor) {
+            Self::prune_quota(quota, now, limits);
+            quota.inflight = quota.inflight.saturating_sub(1);
+            quota.last_touch = now;
+        }
+        Self::prune_map(&mut guard.sessions, now, limits);
+        Self::prune_map(&mut guard.actors, now, limits);
     }
 }
 
@@ -543,7 +606,7 @@ fn percentile_p95(values: &VecDeque<i64>) -> Option<i64> {
 
 async fn persist_metrics_snapshot(state: &WebState) -> Result<(), (StatusCode, String)> {
     let snapshot = state.metrics.lock().await.clone();
-    let active_sessions = state.request_hub.sessions.lock().await.len() as i64;
+    let active_sessions = state.request_hub.active_sessions().await as i64;
     let now = chrono::Utc::now();
     let bucket_ts_ms = (now.timestamp() / 60) * 60 * 1000;
     let point = MetricsHistoryPoint {
@@ -1030,6 +1093,40 @@ fn parse_chat_id_from_session_key(session_key: &str) -> Option<i64> {
         .and_then(|s| s.parse::<i64>().ok())
 }
 
+async fn resolve_chat_id_for_session_key_read(
+    state: &WebState,
+    session_key: &str,
+) -> Result<i64, (StatusCode, String)> {
+    if let Some(parsed) = parse_chat_id_from_session_key(session_key) {
+        let exists = call_blocking(state.app_state.db.clone(), move |db| {
+            db.get_chat_type(parsed)
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .is_some();
+        if exists {
+            return Ok(parsed);
+        }
+        return Err((StatusCode::NOT_FOUND, "session not found".into()));
+    }
+
+    let key = session_key.to_string();
+    let by_title = call_blocking(state.app_state.db.clone(), move |db| {
+        db.get_recent_chats(4000)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .into_iter()
+    .find(|c| c.chat_title.as_deref() == Some(key.as_str()))
+    .map(|c| c.chat_id);
+
+    if let Some(cid) = by_title {
+        return Ok(cid);
+    }
+
+    Err((StatusCode::NOT_FOUND, "session not found".into()))
+}
+
 async fn resolve_chat_id_for_session_key(
     state: &WebState,
     session_key: &str,
@@ -1047,7 +1144,6 @@ async fn resolve_chat_id_for_session_key(
     .into_iter()
     .find(|c| c.chat_title.as_deref() == Some(key.as_str()))
     .map(|c| c.chat_id);
-
     if let Some(cid) = by_title {
         return Ok(cid);
     }
@@ -1069,7 +1165,7 @@ async fn api_usage(
     require_scope(&state, &headers, AuthScope::Read).await?;
 
     let session_key = normalize_session_key(query.session_key.as_deref());
-    let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
+    let chat_id = resolve_chat_id_for_session_key_read(&state, &session_key).await?;
     let report = build_usage_report(state.app_state.db.clone(), chat_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -1124,7 +1220,7 @@ async fn api_memory_observability(
         None
     } else {
         let session_key = normalize_session_key(query.session_key.as_deref());
-        Some(resolve_chat_id_for_session_key(&state, &session_key).await?)
+        Some(resolve_chat_id_for_session_key_read(&state, &session_key).await?)
     };
 
     let summary = call_blocking(state.app_state.db.clone(), move |db| {
@@ -1203,10 +1299,14 @@ async fn api_send(
     Json(body): Json<SendRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     metrics_http_inc(&state).await;
-    require_scope(&state, &headers, AuthScope::Write).await?;
+    let identity = require_scope(&state, &headers, AuthScope::Write).await?;
     let start = Instant::now();
     let session_key = normalize_session_key(body.session_key.as_deref());
-    if let Err((status, msg)) = state.request_hub.begin(&session_key, &state.limits).await {
+    if let Err((status, msg)) = state
+        .request_hub
+        .begin(&session_key, &identity.actor, &state.limits)
+        .await
+    {
         info!(
             target: "web",
             endpoint = "/api/send",
@@ -1225,7 +1325,7 @@ async fn api_send(
     metrics_record_request_result(&state, result.is_ok(), start.elapsed().as_millis() as i64).await;
     state
         .request_hub
-        .end_with_limits(&session_key, &state.limits)
+        .end_with_limits(&session_key, &identity.actor, &state.limits)
         .await;
     info!(
         target: "web",
@@ -1977,6 +2077,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_different_sessions_same_actor_concurrency_limited() {
+        let limits = WebLimits {
+            max_inflight_per_session: 1,
+            max_requests_per_window: 10,
+            rate_window: Duration::from_secs(10),
+            run_history_limit: 128,
+            session_idle_ttl: Duration::from_secs(60),
+        };
+        let web_state = test_web_state(Box::new(SlowLlm { sleep_ms: 300 }), None, limits);
+        let app = build_router(web_state);
+
+        let req1 = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"main-a","sender_name":"u","message":"one"}"#,
+            ))
+            .unwrap();
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"main-b","sender_name":"u","message":"two"}"#,
+            ))
+            .unwrap();
+
+        let app_a = app.clone();
+        let first = tokio::spawn(async move { app_a.oneshot(req1).await.unwrap() });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let resp2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let resp1 = first.await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn test_stream_includes_tool_events_and_replay() {
         let web_state = test_web_state(
             Box::new(ToolFlowLlm {
@@ -2249,6 +2388,53 @@ mod tests {
             .and_then(|x| x.as_array())
             .map(|a| !a.is_empty())
             .unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_read_endpoints_unknown_session_return_404_without_creating_chat() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let db = web_state.app_state.db.clone();
+        let read_key = "mk_read_only";
+        call_blocking(db.clone(), move |d| {
+            d.upsert_auth_password_hash(&make_password_hash("passw0rd!"))?;
+            d.create_api_key(
+                "read-only",
+                &sha256_hex(read_key),
+                "mk_read_on",
+                &["operator.read".to_string()],
+                None,
+                None,
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let before = call_blocking(db.clone(), move |d| d.get_recent_chats(4000))
+            .await
+            .unwrap()
+            .len();
+
+        let app = build_router(web_state);
+        for uri in [
+            "/api/history?session_key=ghost",
+            "/api/usage?session_key=ghost",
+            "/api/memory_observability?scope=chat&session_key=ghost",
+        ] {
+            let req = Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("authorization", format!("Bearer {read_key}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+
+        let after = call_blocking(db, move |d| d.get_recent_chats(4000))
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(after, before);
     }
 
     #[tokio::test]
@@ -2912,6 +3098,57 @@ commands:
             .unwrap();
         let foreign_status_resp = app.oneshot(foreign_status_req).await.unwrap();
         assert_eq!(foreign_status_resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_approvals_scoped_key_cannot_rotate_or_revoke_api_keys() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let db = web_state.app_state.db.clone();
+        let target_id = call_blocking(db, move |d| {
+            d.upsert_auth_password_hash(&make_password_hash("passw0rd!"))?;
+            d.create_api_key(
+                "approvals",
+                &sha256_hex("mk_approvals_only"),
+                "mk_approve",
+                &[
+                    "operator.read".to_string(),
+                    "operator.write".to_string(),
+                    "operator.approvals".to_string(),
+                ],
+                None,
+                None,
+            )?;
+            d.create_api_key(
+                "target",
+                &sha256_hex("mk_target_key"),
+                "mk_target_",
+                &["operator.read".to_string()],
+                None,
+                None,
+            )
+        })
+        .await
+        .unwrap();
+        let app = build_router(web_state);
+
+        let rotate_req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/auth/api_keys/{target_id}/rotate"))
+            .header("authorization", "Bearer mk_approvals_only")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"scopes":["operator.admin"]}"#))
+            .unwrap();
+        let rotate_resp = app.clone().oneshot(rotate_req).await.unwrap();
+        assert_eq!(rotate_resp.status(), StatusCode::FORBIDDEN);
+
+        let revoke_req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/auth/api_keys/{target_id}"))
+            .header("authorization", "Bearer mk_approvals_only")
+            .body(Body::empty())
+            .unwrap();
+        let revoke_resp = app.oneshot(revoke_req).await.unwrap();
+        assert_eq!(revoke_resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
