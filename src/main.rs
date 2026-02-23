@@ -15,6 +15,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     name = "microclaw",
     version = VERSION,
+    help_template = "{about-with-newline}",
     about = "MicroClaw multi-channel agent runtime",
     long_about = concat!(
         "MicroClaw v",
