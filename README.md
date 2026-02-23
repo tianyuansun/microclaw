@@ -476,8 +476,8 @@ When `web_enabled: true`, MicroClaw serves a local Web UI (default `http://127.0
 - Password reset helpers:
   - `microclaw web` (show usage)
   - `microclaw web --password <value>`
-  - `microclaw web --generate`
-  - `microclaw web --clear`
+  - `microclaw web --password-generate`
+  - `microclaw web --password-clear`
 
 ## Release
 

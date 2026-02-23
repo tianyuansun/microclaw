@@ -1239,7 +1239,7 @@ function App() {
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.status === 401) {
-          setAuthMessage('Password is incorrect. Please try again or reset with `microclaw web-password --generate`.')
+          setAuthMessage('Password is incorrect. Please try again or reset with `microclaw web --password-generate`.')
           return
         }
         if (e.status === 429) {
