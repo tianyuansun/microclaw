@@ -492,9 +492,7 @@ pub async fn execute_dynamic_plugin_tool(
             break;
         }
     }
-    let Some((plugin_name, spec)) = matched else {
-        return None;
-    };
+    let (plugin_name, spec) = matched?;
 
     Some(execute_plugin_tool_spec(config, &plugin_name, &spec, input).await)
 }
