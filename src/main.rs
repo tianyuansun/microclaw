@@ -505,7 +505,8 @@ mod tests {
     use std::path::Path;
 
     fn unique_temp_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("microclaw-main-test-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("microclaw-main-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create temp test dir");
         dir
     }
