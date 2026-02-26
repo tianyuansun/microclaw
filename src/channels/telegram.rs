@@ -448,7 +448,13 @@ async fn handle_message(
         "private" => true,
         _ => {
             let bot_mention = format!("@{}", tg_bot_username);
-            text.contains(&bot_mention)
+            let mentioned = text.to_ascii_lowercase().contains(&bot_mention.to_ascii_lowercase());
+            let replied_to_bot = msg
+                .reply_to_message()
+                .and_then(|m| m.from.as_ref())
+                .map(|u| u.is_bot && u.username.as_deref() == Some(tg_bot_username.as_str()))
+                .unwrap_or(false);
+            mentioned || replied_to_bot
         }
     };
 
