@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use teloxide::prelude::*;
 use teloxide::types::{ChatAction, InputFile, ParseMode, ThreadId};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::agent_engine::{
     process_with_agent_with_events, should_suppress_user_error, AgentEvent, AgentRequestContext,
@@ -492,7 +492,7 @@ async fn handle_message(
         }
     };
 
-    info!(
+    debug!(
         "Telegram inbound channel={} message_id={} chat_id={} chat_type={} should_respond={} text_preview={}",
         tg_channel_name,
         msg.id.0,
@@ -845,7 +845,7 @@ async fn handle_message(
 
     // Determine if we should respond
     if !should_respond {
-        info!(
+        debug!(
             "Telegram skip channel={} message_id={} reason=not_addressed mention={} text_mention={} reply_to_bot={} bot_username={} bot_user_id={:?}",
             tg_channel_name,
             msg.id.0,
