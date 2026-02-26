@@ -793,7 +793,7 @@ impl SetupApp {
             editing: false,
             picker: None,
             status:
-                "Use ↑/↓ select field, Enter to edit or choose list, F2 validate, s/Ctrl+S save, q quit"
+                "Use ↑/↓/j/k/Ctrl+N/Ctrl+P to move, Enter to edit or choose list, F2 validate, s/Ctrl+S save, q quit"
                     .into(),
             completed: false,
             backup_path: None,
@@ -3305,7 +3305,8 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
         Line::from("• Enter: edit field / open selection list"),
         Line::from("• Channels picker: Space toggle, Enter apply"),
         Line::from("• Tab / Shift+Tab: next/prev field"),
-        Line::from("• ↑/↓ in list: move, Enter: confirm, Esc: close"),
+        Line::from("• ↑/↓ or j/k or Ctrl+N/Ctrl+P: move"),
+        Line::from("• In selection list: Enter confirm, Esc close"),
         Line::from("• PgUp/PgDn: scroll field list"),
         Line::from("• ←/→ on provider/model: rotate presets"),
         Line::from("• e: force manual text edit"),
@@ -3501,6 +3502,14 @@ fn run_wizard(mut terminal: DefaultTerminal) -> Result<bool, MicroClawError> {
                     }
                     KeyCode::Up => app.move_picker(-1),
                     KeyCode::Down => app.move_picker(1),
+                    KeyCode::Char('k') => app.move_picker(-1),
+                    KeyCode::Char('j') => app.move_picker(1),
+                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.move_picker(-1)
+                    }
+                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.move_picker(1)
+                    }
                     KeyCode::Char(' ') => app.toggle_picker_multi(),
                     KeyCode::Enter => app.apply_picker_selection(),
                     _ => {}
@@ -3539,6 +3548,10 @@ fn run_wizard(mut terminal: DefaultTerminal) -> Result<bool, MicroClawError> {
                 KeyCode::Char('q') => return Ok(false),
                 KeyCode::Up => app.prev(),
                 KeyCode::Down => app.next(),
+                KeyCode::Char('k') => app.prev(),
+                KeyCode::Char('j') => app.next(),
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => app.prev(),
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => app.next(),
                 KeyCode::PageDown => app.page_down(UI_FIELD_WINDOW),
                 KeyCode::PageUp => app.page_up(UI_FIELD_WINDOW),
                 KeyCode::Tab => app.next(),
