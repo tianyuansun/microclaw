@@ -460,6 +460,7 @@ const RADIX_ACCENT_BY_THEME: Record<UiTheme, string> = {
   orange: 'orange',
   indigo: 'indigo',
 }
+const TELEGRAM_BOT_MAX = 10
 
 function defaultModelForProvider(providerRaw: string): string {
   const provider = providerRaw.trim().toLowerCase()
@@ -496,6 +497,37 @@ function defaultAccountConfig(channelCfg: unknown): Record<string, unknown> {
   if (!accounts || typeof accounts !== 'object') return {}
   const account = (accounts as Record<string, unknown>)[accountId]
   return account && typeof account === 'object' ? (account as Record<string, unknown>) : {}
+}
+
+function defaultTelegramAccountIdForSlot(slot: number): string {
+  return slot <= 1 ? 'main' : `bot${slot}`
+}
+
+function normalizeTelegramBotCount(raw: unknown): number {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return 1
+  return Math.min(TELEGRAM_BOT_MAX, Math.max(1, Math.floor(n)))
+}
+
+function orderedTelegramAccountsFromChannelConfig(channelCfg: unknown): Array<[string, Record<string, unknown>]> {
+  if (!channelCfg || typeof channelCfg !== 'object') return []
+  const cfg = channelCfg as Record<string, unknown>
+  const accountsRaw = cfg.accounts
+  if (!accountsRaw || typeof accountsRaw !== 'object') return []
+  const accountsObj = accountsRaw as Record<string, unknown>
+  const entries: Array<[string, Record<string, unknown>]> = Object.entries(accountsObj)
+    .filter(([, v]) => v && typeof v === 'object' && !Array.isArray(v))
+    .map(([id, v]) => [id, v as Record<string, unknown>])
+  if (entries.length === 0) return []
+
+  const defaultId = defaultAccountIdFromChannelConfig(cfg)
+  entries.sort(([a], [b]) => a.localeCompare(b))
+  const defaultIdx = entries.findIndex(([id]) => id === defaultId)
+  if (defaultIdx > 0) {
+    const [defaultEntry] = entries.splice(defaultIdx, 1)
+    entries.unshift(defaultEntry)
+  }
+  return entries.slice(0, TELEGRAM_BOT_MAX)
 }
 
 function accountsJsonFromChannelConfig(channelCfg: unknown): string {
@@ -1689,6 +1721,23 @@ function App() {
       const telegramCfg = channelsCfg.telegram || {}
       const telegramDefaultAccount = defaultAccountIdFromChannelConfig(telegramCfg)
       const telegramAccountCfg = defaultAccountConfig(telegramCfg)
+      const telegramAccounts = orderedTelegramAccountsFromChannelConfig(telegramCfg)
+      const telegramBotCount = normalizeTelegramBotCount(telegramAccounts.length || 1)
+      const telegramBotDraft: Record<string, unknown> = {}
+      for (let slot = 1; slot <= TELEGRAM_BOT_MAX; slot += 1) {
+        const account = telegramAccounts[slot - 1]
+        const accountId = account?.[0] || defaultTelegramAccountIdForSlot(slot)
+        const accountCfg = account?.[1] || {}
+        telegramBotDraft[`telegram_bot_${slot}_account_id`] = accountId
+        telegramBotDraft[`telegram_bot_${slot}_token`] = ''
+        telegramBotDraft[`telegram_bot_${slot}_has_token`] = Boolean(
+          typeof accountCfg.bot_token === 'string' && String(accountCfg.bot_token || '').trim(),
+        )
+        telegramBotDraft[`telegram_bot_${slot}_username`] = String(accountCfg.bot_username || '')
+        telegramBotDraft[`telegram_bot_${slot}_allowed_user_ids`] = Array.isArray(accountCfg.allowed_user_ids)
+          ? (accountCfg.allowed_user_ids as number[]).join(',')
+          : ''
+      }
       const discordCfg = channelsCfg.discord || {}
       const discordDefaultAccount = defaultAccountIdFromChannelConfig(discordCfg)
       const discordAccountCfg = defaultAccountConfig(discordCfg)
@@ -1701,12 +1750,13 @@ function App() {
         telegram_bot_token: '',
         bot_username: String(data.config?.bot_username || ''),
         telegram_account_id: telegramDefaultAccount,
+        telegram_bot_count: telegramBotCount,
         telegram_bot_username: String(telegramAccountCfg.bot_username || telegramCfg.bot_username || ''),
-        telegram_model: String(telegramAccountCfg.model || telegramCfg.model || ''),
+        telegram_model: String(telegramCfg.model || telegramAccountCfg.model || ''),
         telegram_allowed_user_ids: Array.isArray(telegramCfg.allowed_user_ids)
           ? (telegramCfg.allowed_user_ids as number[]).join(',')
           : '',
-        telegram_accounts_json: accountsJsonFromChannelConfig(telegramCfg),
+        ...telegramBotDraft,
         discord_bot_token: '',
         discord_account_id: discordDefaultAccount,
         discord_bot_username: String(discordAccountCfg.bot_username || discordCfg.bot_username || ''),
@@ -1863,6 +1913,16 @@ function App() {
           break
         case 'telegram_account_id':
           next.telegram_account_id = 'main'
+          break
+        case 'telegram_bot_count':
+          next.telegram_bot_count = 1
+          for (let slot = 1; slot <= TELEGRAM_BOT_MAX; slot += 1) {
+            next[`telegram_bot_${slot}_account_id`] = defaultTelegramAccountIdForSlot(slot)
+            next[`telegram_bot_${slot}_token`] = ''
+            next[`telegram_bot_${slot}_has_token`] = false
+            next[`telegram_bot_${slot}_username`] = ''
+            next[`telegram_bot_${slot}_allowed_user_ids`] = ''
+          }
           break
         case 'bot_username':
           next.bot_username = ''
@@ -2075,16 +2135,41 @@ function App() {
 
       const tg = String(configDraft.telegram_bot_token || '').trim()
       const telegramAccountId = normalizeAccountId(configDraft.telegram_account_id)
-      const telegramBotUsername = String(configDraft.telegram_bot_username || '').trim()
       const telegramModel = String(configDraft.telegram_model || '').trim()
+      const telegramBotCount = normalizeTelegramBotCount(configDraft.telegram_bot_count)
       const telegramAllowedUserIds = parseI64ListCsvOrJsonArray(
         String(configDraft.telegram_allowed_user_ids || ''),
         'telegram_allowed_user_ids',
       )
-      const telegramAccounts = parseAccountsJson(
-        'telegram_accounts_json',
-        String(configDraft.telegram_accounts_json || ''),
-      )
+      const telegramAccounts: Record<string, unknown> = {}
+      for (let slot = 1; slot <= telegramBotCount; slot += 1) {
+        const accountId = normalizeAccountId(
+          configDraft[`telegram_bot_${slot}_account_id`] || defaultTelegramAccountIdForSlot(slot),
+        )
+        const token = String(configDraft[`telegram_bot_${slot}_token`] || '').trim()
+        const hasToken = Boolean(configDraft[`telegram_bot_${slot}_has_token`])
+        const username = String(configDraft[`telegram_bot_${slot}_username`] || '').trim()
+        const accountAllowedUserIds = parseI64ListCsvOrJsonArray(
+          String(configDraft[`telegram_bot_${slot}_allowed_user_ids`] || ''),
+          `telegram_bot_${slot}_allowed_user_ids`,
+        )
+        const hasAny =
+          Boolean(token) ||
+          hasToken ||
+          Boolean(username) ||
+          accountAllowedUserIds.length > 0 ||
+          accountId === telegramAccountId
+        if (!hasAny) continue
+        if (Object.prototype.hasOwnProperty.call(telegramAccounts, accountId)) {
+          throw new Error(`Duplicate Telegram account id: ${accountId}`)
+        }
+        telegramAccounts[accountId] = {
+          enabled: true,
+          ...(token ? { bot_token: token } : {}),
+          ...(username ? { bot_username: username } : {}),
+          ...(accountAllowedUserIds.length > 0 ? { allowed_user_ids: accountAllowedUserIds } : {}),
+        }
+      }
 
       const discordToken = String(configDraft.discord_bot_token || '').trim()
       const discordAccountId = normalizeAccountId(configDraft.discord_account_id)
@@ -2115,24 +2200,16 @@ function App() {
 
       // Build generic channel_configs from dynamic channel definitions
       const channelConfigs: Record<string, Record<string, unknown>> = {}
-      if (telegramAccounts) {
+      if (
+        Object.keys(telegramAccounts).length > 0 ||
+        telegramAllowedUserIds.length > 0 ||
+        telegramModel
+      ) {
         channelConfigs.telegram = {
           default_account: telegramAccountId,
+          ...(telegramModel ? { model: telegramModel } : {}),
           ...(telegramAllowedUserIds.length > 0 ? { allowed_user_ids: telegramAllowedUserIds } : {}),
           accounts: telegramAccounts,
-        }
-      } else if (tg || telegramBotUsername || telegramModel || telegramAllowedUserIds.length > 0) {
-        channelConfigs.telegram = {
-          default_account: telegramAccountId,
-          ...(telegramAllowedUserIds.length > 0 ? { allowed_user_ids: telegramAllowedUserIds } : {}),
-          accounts: {
-            [telegramAccountId]: {
-              enabled: true,
-              ...(tg ? { bot_token: tg } : {}),
-              ...(telegramBotUsername ? { bot_username: telegramBotUsername } : {}),
-              ...(telegramModel ? { model: telegramModel } : {}),
-            },
-          },
         }
       }
       if (discordAccounts) {
@@ -2880,7 +2957,7 @@ function App() {
                           ]}
                         />
                         <Text size="1" color="gray" className="mt-3 block">
-                          Required: bot token and username. Leave token unchanged if already configured.
+                          Configure one or more bots (up to 10). Leave token blank to keep existing secret unchanged.
                         </Text>
                         <div className="mt-4 space-y-3">
                           <ConfigFieldCard label="telegram_default_account" description={<>Default account id under <code>channels.telegram.accounts</code>.</>}>
@@ -2891,23 +2968,17 @@ function App() {
                               placeholder="main"
                             />
                           </ConfigFieldCard>
-                          <ConfigFieldCard label="telegram_bot_token" description={<>BotFather token for sending and receiving Telegram messages. Leave blank to keep current secret unchanged.</>}>
+                          <ConfigFieldCard label="telegram_bot_count" description={<>Number of Telegram bot accounts to configure (1-10).</>}>
                             <TextField.Root
                               className="mt-2"
-                              value={String(configDraft.telegram_bot_token || '')}
-                              onChange={(e) => setConfigField('telegram_bot_token', e.target.value)}
-                              placeholder="123456789:AA..."
+                              type="number"
+                              min="1"
+                              max={String(TELEGRAM_BOT_MAX)}
+                              value={String(configDraft.telegram_bot_count || 1)}
+                              onChange={(e) => setConfigField('telegram_bot_count', normalizeTelegramBotCount(e.target.value))}
                             />
                           </ConfigFieldCard>
-                          <ConfigFieldCard label="telegram_bot_username" description={<>Optional Telegram-specific username override without <code>@</code>, used for group mention trigger.</>}>
-                            <TextField.Root
-                              className="mt-2"
-                              value={String(configDraft.telegram_bot_username || '')}
-                              onChange={(e) => setConfigField('telegram_bot_username', e.target.value)}
-                              placeholder="my_microclaw_bot"
-                            />
-                          </ConfigFieldCard>
-                          <ConfigFieldCard label="telegram_model" description={<>Optional Telegram bot model override for this account.</>}>
+                          <ConfigFieldCard label="telegram_model" description={<>Optional Telegram channel-level model override.</>}>
                             <TextField.Root
                               className="mt-2"
                               value={String(configDraft.telegram_model || '')}
@@ -2923,15 +2994,48 @@ function App() {
                               placeholder="123456789,987654321"
                             />
                           </ConfigFieldCard>
-                          <ConfigFieldCard label="telegram_accounts_json" description={<>Optional multi-bot config JSON for <code>channels.telegram.accounts</code>. When set, this takes precedence over single-account fields above.</>}>
-                            <textarea
-                              className="mt-2 w-full rounded border border-[color:var(--gray-a6)] bg-transparent px-3 py-2 font-mono text-xs"
-                              rows={8}
-                              value={String(configDraft.telegram_accounts_json || '')}
-                              onChange={(e) => setConfigField('telegram_accounts_json', e.target.value)}
-                              placeholder={'{"main":{"enabled":true,"bot_token":"123:AA...","bot_username":"my_bot"}}'}
-                            />
-                          </ConfigFieldCard>
+                          {Array.from({ length: normalizeTelegramBotCount(configDraft.telegram_bot_count || 1) }).map((_, idx) => {
+                            const slot = idx + 1
+                            return (
+                              <Card key={`telegram-bot-${slot}`} className="p-3">
+                                <Text size="2" weight="medium">Telegram bot #{slot}</Text>
+                                <div className="mt-2 space-y-3">
+                                  <ConfigFieldCard label={`telegram_bot_${slot}_account_id`} description={<>Bot account id used under <code>channels.telegram.accounts</code>.</>}>
+                                    <TextField.Root
+                                      className="mt-2"
+                                      value={String(configDraft[`telegram_bot_${slot}_account_id`] || defaultTelegramAccountIdForSlot(slot))}
+                                      onChange={(e) => setConfigField(`telegram_bot_${slot}_account_id`, e.target.value)}
+                                      placeholder={defaultTelegramAccountIdForSlot(slot)}
+                                    />
+                                  </ConfigFieldCard>
+                                  <ConfigFieldCard label={`telegram_bot_${slot}_token`} description={<>BotFather token for this account. Leave blank to keep current secret unchanged.</>}>
+                                    <TextField.Root
+                                      className="mt-2"
+                                      value={String(configDraft[`telegram_bot_${slot}_token`] || '')}
+                                      onChange={(e) => setConfigField(`telegram_bot_${slot}_token`, e.target.value)}
+                                      placeholder="123456789:AA..."
+                                    />
+                                  </ConfigFieldCard>
+                                  <ConfigFieldCard label={`telegram_bot_${slot}_username`} description={<>Telegram username without <code>@</code>, used for group mention trigger.</>}>
+                                    <TextField.Root
+                                      className="mt-2"
+                                      value={String(configDraft[`telegram_bot_${slot}_username`] || '')}
+                                      onChange={(e) => setConfigField(`telegram_bot_${slot}_username`, e.target.value)}
+                                      placeholder={slot === 1 ? 'my_main_bot' : `my_bot_${slot}`}
+                                    />
+                                  </ConfigFieldCard>
+                                  <ConfigFieldCard label={`telegram_bot_${slot}_allowed_user_ids`} description={<>Optional per-bot private-chat allowlist (CSV or JSON array).</>}>
+                                    <TextField.Root
+                                      className="mt-2"
+                                      value={String(configDraft[`telegram_bot_${slot}_allowed_user_ids`] || '')}
+                                      onChange={(e) => setConfigField(`telegram_bot_${slot}_allowed_user_ids`, e.target.value)}
+                                      placeholder="123456789,987654321"
+                                    />
+                                  </ConfigFieldCard>
+                                </div>
+                              </Card>
+                            )
+                          })}
                         </div>
                       </div>
                     </Tabs.Content>
