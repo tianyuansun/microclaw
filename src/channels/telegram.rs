@@ -258,11 +258,12 @@ pub fn build_telegram_runtime_contexts(
         } else {
             account_cfg.allowed_groups.clone()
         };
-        let allowed_user_ids = if account_cfg.allowed_user_ids.is_empty() {
-            tg_cfg.allowed_user_ids.clone()
-        } else {
-            account_cfg.allowed_user_ids.clone()
-        };
+        let mut allowed_user_ids = tg_cfg.allowed_user_ids.clone();
+        for user_id in &account_cfg.allowed_user_ids {
+            if !allowed_user_ids.contains(user_id) {
+                allowed_user_ids.push(*user_id);
+            }
+        }
         let model = account_cfg
             .model
             .as_deref()
@@ -1963,7 +1964,7 @@ mod tests {
         assert_eq!(runtimes[1].1.channel_name, "telegram");
         assert_eq!(runtimes[1].1.bot_username, "sales_bot");
         assert_eq!(runtimes[1].1.allowed_groups, vec![101]);
-        assert_eq!(runtimes[1].1.allowed_user_ids, vec![1001]);
+        assert_eq!(runtimes[1].1.allowed_user_ids, vec![11, 1001]);
     }
 
     #[test]

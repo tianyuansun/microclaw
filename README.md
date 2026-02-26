@@ -777,7 +777,7 @@ All configuration is via `microclaw.config.yaml`:
 | `channels.telegram.accounts.<id>.model` | No | unset | Optional per-bot model override for that Telegram account |
 | `channels.telegram.allowed_user_ids` | No | `[]` | Optional Telegram private chat sender allowlist at channel scope |
 | `channels.telegram.accounts.<id>.allowed_groups` | No | `[]` | Optional Telegram group allowlist scoped to one account |
-| `channels.telegram.accounts.<id>.allowed_user_ids` | No | `[]` | Optional Telegram private chat sender allowlist scoped to one account (overrides channel scope) |
+| `channels.telegram.accounts.<id>.allowed_user_ids` | No | `[]` | Optional Telegram private chat sender allowlist scoped to one account (merged with channel scope) |
 | `discord_bot_token` | No* | -- | Discord bot token from Discord Developer Portal |
 | `channels.discord.default_account` | No | unset | Default Discord account ID in multi-account mode |
 | `channels.discord.accounts.<id>.bot_token` | No* | unset | Discord bot token for a specific account |

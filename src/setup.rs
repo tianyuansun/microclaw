@@ -102,6 +102,10 @@ fn telegram_bot_count_key() -> &'static str {
     "TELEGRAM_BOT_COUNT"
 }
 
+fn telegram_allowed_user_ids_key() -> &'static str {
+    "TELEGRAM_ALLOWED_USER_IDS"
+}
+
 fn telegram_llm_provider_key() -> &'static str {
     "TELEGRAM_LLM_PROVIDER"
 }
@@ -747,6 +751,16 @@ impl SetupApp {
                     secret: false,
                 },
                 Field {
+                    key: telegram_allowed_user_ids_key().into(),
+                    label: "Telegram bot allowed user ids (csv/array, optional)".into(),
+                    value: existing
+                        .get(telegram_allowed_user_ids_key())
+                        .cloned()
+                        .unwrap_or_default(),
+                    required: false,
+                    secret: false,
+                },
+                Field {
                     key: telegram_llm_provider_key().into(),
                     label: "Telegram LLM provider override (optional)".into(),
                     value: existing
@@ -1256,6 +1270,23 @@ impl SetupApp {
                                 .or_else(|| channel_default_account_str_value(ch_cfg, "model"))
                         })
                         .unwrap_or_default();
+                    let telegram_allowed_user_ids = config
+                        .channels
+                        .get("telegram")
+                        .and_then(|ch_cfg| ch_cfg.get("allowed_user_ids"))
+                        .and_then(|v| v.as_sequence())
+                        .map(|seq| {
+                            seq.iter()
+                                .filter_map(|item| {
+                                    item.as_i64()
+                                        .map(|id| id.to_string())
+                                        .or_else(|| item.as_str().map(|s| s.trim().to_string()))
+                                })
+                                .filter(|s| !s.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default();
                     let telegram_llm_provider = config
                         .channels
                         .get("telegram")
@@ -1380,6 +1411,10 @@ impl SetupApp {
                     map.insert("TELEGRAM_BOT_TOKEN".into(), telegram_bot_token.clone());
                     map.insert("TELEGRAM_ACCOUNT_ID".into(), telegram_account_id.clone());
                     map.insert("TELEGRAM_MODEL".into(), telegram_model.clone());
+                    map.insert(
+                        telegram_allowed_user_ids_key().into(),
+                        telegram_allowed_user_ids.clone(),
+                    );
                     map.insert(
                         telegram_llm_provider_key().into(),
                         telegram_llm_provider.clone(),
@@ -2123,7 +2158,7 @@ impl SetupApp {
 
     fn is_field_visible(&self, key: &str) -> bool {
         match key {
-            "TELEGRAM_MODEL" => self.channel_enabled("telegram"),
+            "TELEGRAM_MODEL" | "TELEGRAM_ALLOWED_USER_IDS" => self.channel_enabled("telegram"),
             "TELEGRAM_BOT_TOKEN" | "BOT_USERNAME" | "TELEGRAM_ACCOUNT_ID" => false,
             "TELEGRAM_LLM_PROVIDER" | "TELEGRAM_LLM_API_KEY" | "TELEGRAM_LLM_BASE_URL" => false,
             _ if key == telegram_bot_count_key() => self.channel_enabled("telegram"),
@@ -2326,6 +2361,10 @@ impl SetupApp {
             let _ = parse_bot_count(
                 &self.field_value(telegram_bot_count_key()),
                 telegram_bot_count_key(),
+            )?;
+            parse_i64_list_field(
+                &self.field_value(telegram_allowed_user_ids_key()),
+                telegram_allowed_user_ids_key(),
             )?;
             let account_id = account_id_from_value(&self.field_value(&telegram_slot_id_key(1)));
             if !is_valid_account_id(&account_id) {
@@ -2881,6 +2920,7 @@ impl SetupApp {
             "TELEGRAM_BOT_TOKEN"
             | "BOT_USERNAME"
             | "TELEGRAM_MODEL"
+            | "TELEGRAM_ALLOWED_USER_IDS"
             | "TELEGRAM_LLM_PROVIDER"
             | "TELEGRAM_LLM_API_KEY"
             | "TELEGRAM_LLM_BASE_URL"
@@ -2979,6 +3019,7 @@ impl SetupApp {
             | "BOT_USERNAME"
             | "TELEGRAM_ACCOUNT_ID"
             | "TELEGRAM_MODEL"
+            | "TELEGRAM_ALLOWED_USER_IDS"
             | "TELEGRAM_LLM_PROVIDER"
             | "TELEGRAM_LLM_API_KEY"
             | "TELEGRAM_LLM_BASE_URL"
@@ -3059,9 +3100,10 @@ impl SetupApp {
             "TELEGRAM_ACCOUNT_ID" => ORDER_CHANNEL_BASE + 3,
             _ if key == telegram_bot_count_key() => ORDER_CHANNEL_BASE + 5,
             "TELEGRAM_MODEL" => ORDER_CHANNEL_BASE + 6,
-            "TELEGRAM_LLM_PROVIDER" => ORDER_CHANNEL_BASE + 7,
-            "TELEGRAM_LLM_API_KEY" => ORDER_CHANNEL_BASE + 8,
-            "TELEGRAM_LLM_BASE_URL" => ORDER_CHANNEL_BASE + 9,
+            "TELEGRAM_ALLOWED_USER_IDS" => ORDER_CHANNEL_BASE + 7,
+            "TELEGRAM_LLM_PROVIDER" => ORDER_CHANNEL_BASE + 8,
+            "TELEGRAM_LLM_API_KEY" => ORDER_CHANNEL_BASE + 9,
+            "TELEGRAM_LLM_BASE_URL" => ORDER_CHANNEL_BASE + 10,
             "DISCORD_BOT_TOKEN" => ORDER_CHANNEL_BASE + 900,
             "DISCORD_ACCOUNT_ID" => ORDER_CHANNEL_BASE + 901,
             "DISCORD_MODEL" => ORDER_CHANNEL_BASE + 902,
@@ -3499,6 +3541,10 @@ fn save_config_yaml(
     let telegram_llm_provider = get(telegram_llm_provider_key());
     let telegram_llm_api_key = get(telegram_llm_api_key_key());
     let telegram_llm_base_url = get(telegram_llm_base_url_key());
+    let telegram_channel_allowed_user_ids = parse_i64_list_field(
+        &get(telegram_allowed_user_ids_key()),
+        telegram_allowed_user_ids_key(),
+    )?;
     let telegram_bot_count =
         parse_bot_count(&get(telegram_bot_count_key()), telegram_bot_count_key())?;
     let mut telegram_slot_accounts = serde_json::Map::new();
@@ -3597,6 +3643,7 @@ fn save_config_yaml(
         || !telegram_llm_api_key.trim().is_empty()
         || !telegram_llm_base_url.trim().is_empty()
         || !telegram_model.trim().is_empty()
+        || !telegram_channel_allowed_user_ids.is_empty()
         || telegram_accounts
             .as_ref()
             .map(|v| !v.is_empty())
@@ -3674,6 +3721,12 @@ fn save_config_yaml(
         }
         if !telegram_model.trim().is_empty() {
             yaml.push_str(&format!("    model: \"{}\"\n", telegram_model.trim()));
+        }
+        if !telegram_channel_allowed_user_ids.is_empty() {
+            yaml.push_str("    allowed_user_ids:\n");
+            for id in &telegram_channel_allowed_user_ids {
+                yaml.push_str(&format!("      - {}\n", id));
+            }
         }
         if let Some(accounts) = &telegram_accounts {
             let default_id = pick_default_account_id(&telegram_account_id, accounts);
