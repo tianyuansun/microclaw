@@ -1268,16 +1268,6 @@ function App() {
   }
 
   async function loadHistory(target = sessionKey): Promise<void> {
-    const isChannelSession = target.startsWith('chat:')
-    const isPersistedSession = sessions.some((s) => s.session_key === target)
-    if (!isChannelSession && !isPersistedSession) {
-      setHistorySeed([])
-      setHistoryCountBySession((prev) => ({ ...prev, [target]: 0 }))
-      setRuntimeNonce((x) => x + 1)
-      setError('')
-      return
-    }
-
     try {
       const query = new URLSearchParams({ session_key: target, limit: '200' })
       const data = await api<{ messages?: BackendMessage[] }>(`/api/history?${query.toString()}`)
