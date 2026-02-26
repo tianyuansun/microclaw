@@ -1242,6 +1242,26 @@ voice_transcription_command: "whisper-mlx --file {file}"
     }
 
     #[test]
+    fn test_config_working_dir_isolation_accepts_true() {
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nworking_dir_isolation: true\n";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config.working_dir_isolation,
+            WorkingDirIsolation::Chat
+        ));
+    }
+
+    #[test]
+    fn test_config_working_dir_isolation_accepts_false() {
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nworking_dir_isolation: false\n";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config.working_dir_isolation,
+            WorkingDirIsolation::Shared
+        ));
+    }
+
+    #[test]
     fn test_config_post_deserialize() {
         let yaml =
             "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nllm_provider: ANTHROPIC\n";

@@ -1309,6 +1309,7 @@ Built-in execution playbook:
 - Apply the same behavior across Telegram/Discord/Web unless a tool returns a channel-specific error.
 - Do not answer with "I can't from this runtime" unless a concrete tool attempt failed in this turn.
 - Always prefer absolute paths for files passed between tools (especially attachment_path).
+- For bash/file tools, treat the current chat working directory as the default workspace. Prefer relative paths under that workspace and avoid `/tmp` unless the user explicitly asks for it.
 - If you will call any tool or activate any skill in this turn, you must start by calling todo_write to create a concise task list before the first tool/skill call.
 - This requirement includes activate_skill: plan the work in todo_write first, then activate and execute.
 - If no tools/skills are needed, do not create a todo list.
@@ -2214,6 +2215,13 @@ mod tests {
         assert!(prompt.contains("simple, low-risk, read-only requests"));
         assert!(prompt.contains("call the tool immediately and return the result directly"));
         assert!(prompt.contains("Do not ask confirmation questions"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_prefers_chat_working_dir_over_tmp() {
+        let prompt = super::build_system_prompt("testbot", "telegram", "", 42, "", None);
+        assert!(prompt.contains("current chat working directory"));
+        assert!(prompt.contains("avoid `/tmp` unless the user explicitly asks for it"));
     }
 
     #[test]

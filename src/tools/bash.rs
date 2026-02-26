@@ -91,7 +91,7 @@ impl Tool for BashTool {
             ));
         }
 
-        info!("Executing bash: {}", command);
+        info!("Executing bash in {}: {}", working_dir.display(), command);
 
         let session_key = super::auth_context_from_input(&input)
             .map(|auth| format!("{}-{}", auth.caller_channel, auth.caller_chat_id))
