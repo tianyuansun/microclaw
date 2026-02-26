@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
 
@@ -141,6 +142,21 @@ pub async fn process_with_agent_with_events(
     result
 }
 
+fn with_high_risk_approval_marker(input: &Value) -> Value {
+    let mut approved_input = input.clone();
+    if let Some(obj) = approved_input.as_object_mut() {
+        obj.insert(
+            "__microclaw_high_risk_approved".to_string(),
+            Value::Bool(true),
+        );
+        return approved_input;
+    }
+    serde_json::json!({
+        "__microclaw_high_risk_approved": true,
+        "__microclaw_original_input": input,
+    })
+}
+
 pub fn should_suppress_user_error(err: &anyhow::Error) -> bool {
     let text = err.to_string().to_ascii_lowercase();
     text.contains("http error: error sending request for url")
@@ -167,6 +183,62 @@ fn format_user_message(sender_name: &str, content: &str) -> String {
         sanitize_xml(sender_name),
         sanitize_xml(content)
     )
+}
+
+fn strip_xml_like_tags(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for ch in input.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn is_explicit_user_approval(text: &str) -> bool {
+    let cleaned = strip_xml_like_tags(text);
+    let normalized = cleaned.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let deny_markers = [
+        "don't",
+        "do not",
+        "not approve",
+        "deny",
+        "reject",
+        "cancel",
+        "stop",
+        "different",
+        "不同意",
+        "不批准",
+        "不要",
+        "取消",
+        "停止",
+    ];
+    if deny_markers.iter().any(|m| normalized.contains(m)) {
+        return false;
+    }
+
+    let approval_markers = [
+        "approve",
+        "approved",
+        "go ahead",
+        "proceed",
+        "run it",
+        "确认",
+        "批准",
+        "同意",
+        "继续",
+        "可以执行",
+        "执行吧",
+    ];
+    approval_markers.iter().any(|m| normalized.contains(m))
 }
 
 fn is_slash_command_text(text: &str) -> bool {
@@ -439,6 +511,13 @@ pub(crate) async fn process_with_agent_impl(
         .chars()
         .take(500)
         .collect();
+    let latest_user_text_for_approval = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(message_to_text)
+        .unwrap_or_default();
+    let explicit_user_approval = is_explicit_user_approval(&latest_user_text_for_approval);
 
     // Build system prompt
     let file_memory = state.memory.build_memory_context(chat_id);
@@ -736,6 +815,8 @@ pub(crate) async fn process_with_agent_impl(
             });
 
             let mut tool_results = Vec::new();
+            let mut waiting_for_user_approval = false;
+            let mut waiting_approval_tool: Option<String> = None;
             for block in &response.content {
                 if let ResponseContentBlock::ToolUse { id, name, input } = block {
                     let mut effective_input = input.clone();
@@ -777,18 +858,35 @@ pub(crate) async fn process_with_agent_impl(
                     }
                     info!("Executing tool: {} (iteration {})", name, iteration + 1);
                     let started = std::time::Instant::now();
+                    let mut executed_input = effective_input.clone();
                     let mut result = state
                         .tools
-                        .execute_with_auth(name, effective_input.clone(), &tool_auth)
+                        .execute_with_auth(name, executed_input.clone(), &tool_auth)
                         .await;
-                    // Auto-retry on approval_required — the second call auto-approves
+                    // Auto-retry on approval_required with explicit approval marker.
                     if result.is_error && result.error_type.as_deref() == Some("approval_required")
                     {
-                        info!("Auto-retrying tool '{}' after approval gate", name);
-                        result = state
-                            .tools
-                            .execute_with_auth(name, effective_input.clone(), &tool_auth)
-                            .await;
+                        let can_retry_with_approval =
+                            if state.config.high_risk_tool_user_confirmation_required {
+                                explicit_user_approval
+                            } else {
+                                true
+                            };
+                        if can_retry_with_approval {
+                            executed_input = with_high_risk_approval_marker(&effective_input);
+                            if state.config.high_risk_tool_user_confirmation_required {
+                                info!("Retrying tool '{}' after explicit user approval", name);
+                            } else {
+                                info!("Auto-retrying tool '{}' after approval gate", name);
+                            }
+                            result = state
+                                .tools
+                                .execute_with_auth(name, executed_input.clone(), &tool_auth)
+                                .await;
+                        } else if state.config.high_risk_tool_user_confirmation_required {
+                            waiting_for_user_approval = true;
+                            waiting_approval_tool = Some(name.clone());
+                        }
                     }
                     if let Ok(hook_outcome) = state
                         .hooks
@@ -797,7 +895,7 @@ pub(crate) async fn process_with_agent_impl(
                             context.caller_channel,
                             iteration + 1,
                             name,
-                            &effective_input,
+                            &executed_input,
                             &result,
                         )
                         .await
@@ -886,6 +984,23 @@ pub(crate) async fn process_with_agent_impl(
                 role: "user".into(),
                 content: MessageContent::Blocks(tool_results),
             });
+            if waiting_for_user_approval {
+                strip_images_for_session(&mut messages);
+                strip_images_for_session(&mut messages);
+                if let Ok(json) = serde_json::to_string(&messages) {
+                    let _ =
+                        call_blocking(state.db.clone(), move |db| db.save_session(chat_id, &json))
+                            .await;
+                }
+                let tool_name = waiting_approval_tool.unwrap_or_else(|| "this tool".to_string());
+                let text = format!(
+                    "High-risk tool '{tool_name}' is waiting for your confirmation. Reply with \"批准\" or \"approve\" to continue."
+                );
+                if let Some(tx) = event_tx {
+                    let _ = tx.send(AgentEvent::FinalResponse { text: text.clone() });
+                }
+                return Ok(text);
+            }
 
             continue;
         }
@@ -1291,6 +1406,7 @@ Built-in execution playbook:
 - Apply the same behavior across Telegram/Discord/Web unless a tool returns a channel-specific error.
 - Do not answer with "I can't from this runtime" unless a concrete tool attempt failed in this turn.
 - Always prefer absolute paths for files passed between tools (especially attachment_path).
+- For bash/file tools, treat the current chat working directory as the default workspace. Prefer relative paths under that workspace and avoid `/tmp` unless the user explicitly asks for it.
 - If you will call any tool or activate any skill in this turn, you must start by calling todo_write to create a concise task list before the first tool/skill call.
 - This requirement includes activate_skill: plan the work in todo_write first, then activate and execute.
 - If no tools/skills are needed, do not create a todo list.
@@ -1682,7 +1798,8 @@ mod tests {
         Message, MessagesResponse, ResponseContentBlock, ToolDefinition,
     };
     use microclaw_storage::db::{Database, StoredMessage};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     struct DummyLlm;
@@ -1746,6 +1863,93 @@ mod tests {
         }
     }
 
+    struct ApprovalLoopUntilSuccessfulToolLlm {
+        calls: Arc<AtomicUsize>,
+        saw_successful_tool_result: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ApprovalLoopUntilSuccessfulToolLlm {
+        async fn send_message(
+            &self,
+            _system: &str,
+            messages: Vec<Message>,
+            _tools: Option<Vec<ToolDefinition>>,
+        ) -> Result<MessagesResponse, MicroClawError> {
+            let idx = self.calls.fetch_add(1, Ordering::SeqCst);
+            if idx == 0 {
+                return Ok(MessagesResponse {
+                    content: vec![ResponseContentBlock::ToolUse {
+                        id: "tool-bash-1".to_string(),
+                        name: "bash".to_string(),
+                        input: json!({"command": "printf approved"}),
+                    }],
+                    stop_reason: Some("tool_use".to_string()),
+                    usage: None,
+                });
+            }
+
+            let mut approval_failed = false;
+            let mut approval_succeeded = false;
+            for msg in messages.iter().rev() {
+                if msg.role != "user" {
+                    continue;
+                }
+                if let microclaw_core::llm_types::MessageContent::Blocks(blocks) = &msg.content {
+                    for block in blocks {
+                        if let microclaw_core::llm_types::ContentBlock::ToolResult {
+                            content,
+                            is_error,
+                            ..
+                        } = block
+                        {
+                            if is_error.unwrap_or(false)
+                                && content.contains("Approval required for high-risk tool")
+                            {
+                                approval_failed = true;
+                            } else if !is_error.unwrap_or(false) && content.contains("approved") {
+                                approval_succeeded = true;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if approval_succeeded {
+                self.saw_successful_tool_result
+                    .store(true, Ordering::SeqCst);
+                return Ok(MessagesResponse {
+                    content: vec![ResponseContentBlock::Text {
+                        text: "approval loop resolved".to_string(),
+                    }],
+                    stop_reason: Some("end_turn".to_string()),
+                    usage: None,
+                });
+            }
+
+            if approval_failed {
+                return Ok(MessagesResponse {
+                    content: vec![ResponseContentBlock::ToolUse {
+                        id: format!("tool-bash-retry-{idx}"),
+                        name: "bash".to_string(),
+                        input: json!({"command": "printf approved"}),
+                    }],
+                    stop_reason: Some("tool_use".to_string()),
+                    usage: None,
+                });
+            }
+
+            Ok(MessagesResponse {
+                content: vec![ResponseContentBlock::Text {
+                    text: "unexpected state".to_string(),
+                }],
+                stop_reason: Some("end_turn".to_string()),
+                usage: None,
+            })
+        }
+    }
+
     fn test_db() -> (Arc<Database>, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("mc_agent_engine_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1757,13 +1961,18 @@ mod tests {
         test_state_with_llm(base_dir, Box::new(DummyLlm))
     }
 
-    fn test_state_with_llm(base_dir: &std::path::Path, llm: Box<dyn LlmProvider>) -> Arc<AppState> {
+    fn test_state_with_llm_and_confirmation(
+        base_dir: &std::path::Path,
+        llm: Box<dyn LlmProvider>,
+        require_user_confirmation: bool,
+    ) -> Arc<AppState> {
         let runtime_dir = base_dir.join("runtime");
         std::fs::create_dir_all(&runtime_dir).unwrap();
         let mut cfg = Config::test_defaults();
         cfg.data_dir = base_dir.to_string_lossy().to_string();
         cfg.working_dir = base_dir.join("tmp").to_string_lossy().to_string();
         cfg.working_dir_isolation = WorkingDirIsolation::Shared;
+        cfg.high_risk_tool_user_confirmation_required = require_user_confirmation;
         cfg.web_port = 3900;
         let db = Arc::new(Database::new(runtime_dir.to_str().unwrap()).unwrap());
         let memory_backend = Arc::new(crate::memory_backend::MemoryBackend::local_only(db.clone()));
@@ -1783,6 +1992,10 @@ mod tests {
             memory_backend: memory_backend.clone(),
             tools: ToolRegistry::new(&cfg, channel_registry, db, memory_backend),
         })
+    }
+
+    fn test_state_with_llm(base_dir: &std::path::Path, llm: Box<dyn LlmProvider>) -> Arc<AppState> {
+        test_state_with_llm_and_confirmation(base_dir, llm, false)
     }
 
     fn store_user_message(db: &Database, chat_id: i64, text: &str) {
@@ -2044,6 +2257,143 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base_dir);
     }
 
+    #[tokio::test]
+    async fn test_high_risk_tool_auto_retry_injects_approval_marker() {
+        let base_dir =
+            std::env::temp_dir().join(format!("mc_agent_tool_approval_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base_dir).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let saw_successful_tool_result = Arc::new(AtomicBool::new(false));
+        let llm = ApprovalLoopUntilSuccessfulToolLlm {
+            calls: calls.clone(),
+            saw_successful_tool_result: saw_successful_tool_result.clone(),
+        };
+        let state = test_state_with_llm(&base_dir, Box::new(llm));
+        let chat_id = state
+            .db
+            .resolve_or_create_chat_id("web", "approval-retry-chat", Some("approval"), "web")
+            .unwrap();
+        store_user_message(&state.db, chat_id, "run bash");
+
+        let reply = process_with_agent(
+            &state,
+            AgentRequestContext {
+                caller_channel: "web",
+                chat_id,
+                chat_type: "web",
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply, "approval loop resolved");
+        assert!(saw_successful_tool_result.load(Ordering::SeqCst));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    struct HighRiskNeedsUserConfirmLlm {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for HighRiskNeedsUserConfirmLlm {
+        async fn send_message(
+            &self,
+            _system: &str,
+            messages: Vec<Message>,
+            _tools: Option<Vec<ToolDefinition>>,
+        ) -> Result<MessagesResponse, MicroClawError> {
+            let idx = self.calls.fetch_add(1, Ordering::SeqCst);
+            if idx == 0 {
+                return Ok(MessagesResponse {
+                    content: vec![ResponseContentBlock::ToolUse {
+                        id: "tool-bash-confirm".to_string(),
+                        name: "bash".to_string(),
+                        input: json!({"command": "printf approved"}),
+                    }],
+                    stop_reason: Some("tool_use".to_string()),
+                    usage: None,
+                });
+            }
+
+            let mut saw_approval_required = false;
+            for msg in messages.iter().rev() {
+                if msg.role != "user" {
+                    continue;
+                }
+                if let microclaw_core::llm_types::MessageContent::Blocks(blocks) = &msg.content {
+                    for block in blocks {
+                        if let microclaw_core::llm_types::ContentBlock::ToolResult {
+                            content,
+                            is_error,
+                            ..
+                        } = block
+                        {
+                            if is_error.unwrap_or(false)
+                                && content.contains("Approval required for high-risk tool")
+                            {
+                                saw_approval_required = true;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
+            let text = if saw_approval_required {
+                "need explicit approval".to_string()
+            } else {
+                "unexpected".to_string()
+            };
+            Ok(MessagesResponse {
+                content: vec![ResponseContentBlock::Text { text }],
+                stop_reason: Some("end_turn".to_string()),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_high_risk_tool_waits_for_user_confirmation_when_enabled() {
+        let base_dir =
+            std::env::temp_dir().join(format!("mc_agent_tool_confirm_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base_dir).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = HighRiskNeedsUserConfirmLlm {
+            calls: calls.clone(),
+        };
+        let state = test_state_with_llm_and_confirmation(&base_dir, Box::new(llm), true);
+        let chat_id = state
+            .db
+            .resolve_or_create_chat_id("web", "approval-confirm-chat", Some("approval"), "web")
+            .unwrap();
+        store_user_message(&state.db, chat_id, "run bash");
+
+        let reply = process_with_agent(
+            &state,
+            AgentRequestContext {
+                caller_channel: "web",
+                chat_id,
+                chat_type: "web",
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(reply.contains("waiting for your confirmation"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
     #[test]
     fn test_build_system_prompt_with_soul() {
         let soul = "I am a friendly pirate assistant. I speak in pirate lingo and love adventure.";
@@ -2069,6 +2419,25 @@ mod tests {
         assert!(prompt.contains("simple, low-risk, read-only requests"));
         assert!(prompt.contains("call the tool immediately and return the result directly"));
         assert!(prompt.contains("Do not ask confirmation questions"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_prefers_chat_working_dir_over_tmp() {
+        let prompt = super::build_system_prompt("testbot", "telegram", "", 42, "", None);
+        assert!(prompt.contains("current chat working directory"));
+        assert!(prompt.contains("avoid `/tmp` unless the user explicitly asks for it"));
+    }
+
+    #[test]
+    fn test_is_explicit_user_approval() {
+        assert!(super::is_explicit_user_approval(
+            "<user_message sender=\"u\">批准</user_message>"
+        ));
+        assert!(super::is_explicit_user_approval("Go ahead and run it"));
+        assert!(!super::is_explicit_user_approval("不要执行"));
+        assert!(!super::is_explicit_user_approval(
+            "not approve this command"
+        ));
     }
 
     #[test]
