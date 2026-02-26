@@ -325,8 +325,21 @@ async fn maybe_plugin_slash_response(
 pub async fn start_telegram_bot(
     state: Arc<AppState>,
     bot: Bot,
-    ctx: TelegramRuntimeContext,
+    mut ctx: TelegramRuntimeContext,
 ) -> anyhow::Result<()> {
+    if let Ok(me) = bot.get_me().await {
+        if let Some(actual_username) = me.user.username {
+            let actual = actual_username.to_string();
+            if !actual.is_empty() && actual != ctx.bot_username {
+                info!(
+                    "Telegram channel '{}' runtime username updated from '{}' to '{}'",
+                    ctx.channel_name, ctx.bot_username, actual
+                );
+                ctx.bot_username = actual;
+            }
+        }
+    }
+
     mark_channel_started(&ctx.channel_name);
     let handler = Update::filter_message().endpoint(handle_message);
     let channel_name = ctx.channel_name.clone();
