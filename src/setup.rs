@@ -87,11 +87,7 @@ fn telegram_slot_model_key(slot: usize) -> String {
 }
 
 fn default_slot_account_id(slot: usize) -> String {
-    if slot <= 1 {
-        default_account_id().to_string()
-    } else {
-        format!("No{slot}")
-    }
+    format!("bot{slot}")
 }
 
 fn telegram_bot_count_key() -> &'static str {
