@@ -28,6 +28,15 @@ pub fn write_todos(groups_dir: &Path, chat_id: i64, todos: &[TodoItem]) -> std::
     std::fs::write(path, json)
 }
 
+pub fn clear_todos(groups_dir: &Path, chat_id: i64) -> std::io::Result<bool> {
+    let path = todo_path(groups_dir, chat_id);
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 pub fn format_todos(todos: &[TodoItem]) -> String {
     if todos.is_empty() {
         return "No tasks in the todo list.".into();
@@ -42,4 +51,50 @@ pub fn format_todos(todos: &[TodoItem]) -> String {
         out.push_str(&format!("{}. {} {}\n", i + 1, icon, item.task));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clear_todos, read_todos, write_todos, TodoItem};
+    use std::path::{Path, PathBuf};
+
+    fn test_dir() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "microclaw_todo_store_test_{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn cleanup(dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_clear_todos_removes_file() {
+        let dir = test_dir();
+        let groups_dir = dir.join("groups");
+        write_todos(
+            &groups_dir,
+            123,
+            &[TodoItem {
+                task: "task".into(),
+                status: "pending".into(),
+            }],
+        )
+        .unwrap();
+
+        let cleared = clear_todos(&groups_dir, 123).unwrap();
+        assert!(cleared);
+        assert!(read_todos(&groups_dir, 123).is_empty());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_clear_todos_not_found_is_ok() {
+        let dir = test_dir();
+        let groups_dir = dir.join("groups");
+        let cleared = clear_todos(&groups_dir, 999).unwrap();
+        assert!(!cleared);
+        cleanup(&dir);
+    }
 }

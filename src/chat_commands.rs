@@ -7,6 +7,8 @@ use crate::runtime::AppState;
 use microclaw_core::llm_types::Message;
 use microclaw_storage::db::{call_blocking, Database};
 use microclaw_storage::usage::build_usage_report;
+use microclaw_tools::todo_store::clear_todos;
+use tracing::warn;
 
 pub fn is_slash_command(text: &str) -> bool {
     normalized_slash_command(text).is_some()
@@ -54,6 +56,10 @@ pub async fn handle_chat_command(
 
     if trimmed == "/reset" {
         let _ = call_blocking(state.db.clone(), move |db| db.clear_chat_context(chat_id)).await;
+        let groups_dir = std::path::PathBuf::from(&state.config.data_dir).join("groups");
+        if let Err(e) = clear_todos(&groups_dir, chat_id) {
+            warn!("Failed to clear TODO.json for chat {}: {}", chat_id, e);
+        }
         return Some("Context cleared (session + chat history).".to_string());
     }
 

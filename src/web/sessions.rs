@@ -1,4 +1,5 @@
 use super::*;
+use microclaw_tools::todo_store::clear_todos;
 
 pub(super) async fn api_sessions(
     headers: HeaderMap,
@@ -103,6 +104,10 @@ pub(super) async fn api_reset(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
+    let groups_dir = std::path::PathBuf::from(&state.app_state.config.data_dir).join("groups");
+    if let Err(e) = clear_todos(&groups_dir, chat_id) {
+        warn!("Failed to clear TODO.json for chat {}: {}", chat_id, e);
+    }
 
     audit_log(
         &state,
@@ -133,6 +138,10 @@ pub(super) async fn api_delete_session(
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let groups_dir = std::path::PathBuf::from(&state.app_state.config.data_dir).join("groups");
+    if let Err(e) = clear_todos(&groups_dir, chat_id) {
+        warn!("Failed to clear TODO.json for chat {}: {}", chat_id, e);
+    }
 
     audit_log(
         &state,

@@ -30,6 +30,7 @@ use microclaw_channels::channel_adapter::{ChannelAdapter, ChannelRegistry};
 use microclaw_core::llm_types::Message;
 use microclaw_storage::db::{call_blocking, ChatSummary, MetricsHistoryPoint, StoredMessage};
 use microclaw_storage::usage::build_usage_report;
+use microclaw_tools::todo_store::clear_todos;
 
 mod auth;
 mod config;
@@ -1502,6 +1503,10 @@ async fn handle_web_slash_command(state: &WebState, text: &str, chat_id: i64) ->
             db.clear_chat_context(chat_id)
         })
         .await;
+        let groups_dir = PathBuf::from(&state.app_state.config.data_dir).join("groups");
+        if let Err(e) = clear_todos(&groups_dir, chat_id) {
+            warn!("Failed to clear TODO.json for chat {}: {}", chat_id, e);
+        }
         return Some("Context cleared (session + chat history).".to_string());
     }
 
