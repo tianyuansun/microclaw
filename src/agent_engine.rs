@@ -274,6 +274,27 @@ fn is_slash_command_text(text: &str) -> bool {
     text.trim_start().starts_with('/')
 }
 
+async fn persist_session_with_skill_envs(
+    state: &AppState,
+    chat_id: i64,
+    messages: &mut Vec<Message>,
+    skill_envs: &HashMap<String, String>,
+) {
+    strip_images_for_session(messages);
+    let Ok(json) = serde_json::to_string(messages) else {
+        return;
+    };
+    let skill_envs_json = if skill_envs.is_empty() {
+        None
+    } else {
+        serde_json::to_string(skill_envs).ok()
+    };
+    let _ = call_blocking(state.db.clone(), move |db| {
+        db.save_session_with_meta(chat_id, &json, None, None, skill_envs_json.as_deref())
+    })
+    .await;
+}
+
 fn is_wrapped_slash_command_line(line: &str) -> bool {
     let trimmed = line.trim();
     if !trimmed.starts_with("<user_message ") || !trimmed.ends_with("</user_message>") {
@@ -796,11 +817,7 @@ pub(crate) async fn process_with_agent_impl(
                 role: "assistant".into(),
                 content: MessageContent::Text(text.clone()),
             });
-            strip_images_for_session(&mut messages);
-            if let Ok(json) = serde_json::to_string(&messages) {
-                let _ = call_blocking(state.db.clone(), move |db| db.save_session(chat_id, &json))
-                    .await;
-            }
+            persist_session_with_skill_envs(state, chat_id, &mut messages, &skill_envs).await;
 
             let final_text = if display_text.trim().is_empty() {
                 if stop_reason == "max_tokens" {
@@ -1073,13 +1090,7 @@ pub(crate) async fn process_with_agent_impl(
                 content: MessageContent::Blocks(tool_results),
             });
             if waiting_for_user_approval {
-                strip_images_for_session(&mut messages);
-                strip_images_for_session(&mut messages);
-                if let Ok(json) = serde_json::to_string(&messages) {
-                    let _ =
-                        call_blocking(state.db.clone(), move |db| db.save_session(chat_id, &json))
-                            .await;
-                }
+                persist_session_with_skill_envs(state, chat_id, &mut messages, &skill_envs).await;
                 let tool_name = waiting_approval_tool.unwrap_or_else(|| "this tool".to_string());
                 let text = format!(
                     "High-risk tool '{tool_name}' is waiting for your confirmation. Reply with \"批准\" or \"approve\" to continue."
@@ -1109,11 +1120,7 @@ pub(crate) async fn process_with_agent_impl(
             role: "assistant".into(),
             content: MessageContent::Text(text.clone()),
         });
-        strip_images_for_session(&mut messages);
-        if let Ok(json) = serde_json::to_string(&messages) {
-            let _ =
-                call_blocking(state.db.clone(), move |db| db.save_session(chat_id, &json)).await;
-        }
+        persist_session_with_skill_envs(state, chat_id, &mut messages, &skill_envs).await;
 
         return Ok(if text.is_empty() {
             "(no response)".into()
@@ -1133,10 +1140,7 @@ pub(crate) async fn process_with_agent_impl(
         role: "assistant".into(),
         content: MessageContent::Text(max_iter_msg.clone()),
     });
-    strip_images_for_session(&mut messages);
-    if let Ok(json) = serde_json::to_string(&messages) {
-        let _ = call_blocking(state.db.clone(), move |db| db.save_session(chat_id, &json)).await;
-    }
+    persist_session_with_skill_envs(state, chat_id, &mut messages, &skill_envs).await;
 
     if let Some(tx) = event_tx {
         let _ = tx.send(AgentEvent::FinalResponse {

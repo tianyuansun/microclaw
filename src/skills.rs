@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct SkillMetadata {
@@ -334,12 +334,28 @@ pub fn load_skill_env_vars(meta: &SkillMetadata) -> HashMap<String, String> {
         Some(f) => f.as_str(),
         None => return HashMap::new(),
     };
+    if !is_safe_env_file_path(env_file_name) {
+        return HashMap::new();
+    }
     let env_path = meta.dir_path.join(env_file_name);
     let content = match std::fs::read_to_string(&env_path) {
         Ok(c) => c,
         Err(_) => return HashMap::new(),
     };
     parse_dotenv(&content)
+}
+
+fn is_safe_env_file_path(env_file_name: &str) -> bool {
+    let path = Path::new(env_file_name);
+    if path.is_absolute() {
+        return false;
+    }
+    !path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    })
 }
 
 fn parse_dotenv(content: &str) -> HashMap<String, String> {
@@ -920,6 +936,28 @@ nope
         };
         let envs = load_skill_env_vars(&meta);
         assert!(envs.is_empty());
+    }
+
+    #[test]
+    fn test_load_skill_env_vars_rejects_parent_path() {
+        let dir =
+            std::env::temp_dir().join(format!("microclaw_skill_env_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "KEY=VALUE\n").unwrap();
+        let meta = SkillMetadata {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            dir_path: dir.clone(),
+            platforms: vec![],
+            deps: vec![],
+            source: "local".to_string(),
+            version: None,
+            updated_at: None,
+            env_file: Some("../.env".to_string()),
+        };
+        let envs = load_skill_env_vars(&meta);
+        assert!(envs.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

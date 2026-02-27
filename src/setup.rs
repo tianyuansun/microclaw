@@ -5756,6 +5756,7 @@ sandbox:
     #[test]
     fn test_model_picker_manual_input_enters_edit_mode() {
         let mut app = SetupApp::new();
+        app.set_provider("openai");
         let model_idx = app
             .fields
             .iter()
