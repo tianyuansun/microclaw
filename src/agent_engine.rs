@@ -27,6 +27,7 @@ pub enum AgentEvent {
     },
     ToolStart {
         name: String,
+        input: serde_json::Value,
     },
     ToolResult {
         name: String,
@@ -773,7 +774,10 @@ pub(crate) async fn process_with_agent_impl(
                         }
                     }
                     if let Some(tx) = event_tx {
-                        let _ = tx.send(AgentEvent::ToolStart { name: name.clone() });
+                        let _ = tx.send(AgentEvent::ToolStart {
+                            name: name.clone(),
+                            input: effective_input.clone(),
+                        });
                     }
                     info!("Executing tool: {} (iteration {})", name, iteration + 1);
                     let started = std::time::Instant::now();
