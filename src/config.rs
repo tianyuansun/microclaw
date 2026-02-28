@@ -179,6 +179,31 @@ impl Default for ClawHubConfig {
         }
     }
 }
+
+fn default_log_level() -> u8 {
+    3
+}
+
+/// Logging configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// Log level: 0=off, 1=error, 2=warn, 3=info, 4=debug, 5=trace
+    #[serde(default = "default_log_level")]
+    pub level: u8,
+    /// Optional absolute path for log file. If not set, uses default data_dir/runtime/logs/
+    #[serde(default)]
+    pub file: Option<String>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            file: None,
+        }
+    }
+}
+
 fn is_local_web_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     h == "127.0.0.1" || h == "localhost" || h == "::1"
@@ -329,6 +354,10 @@ pub struct Config {
     /// Example: "whisper-mlx --file {file}" or "/usr/local/bin/whisper {file}"
     #[serde(default, rename = "voice_transcription_command")]
     pub voice_transcription_command: Option<String>,
+
+    // --- Logging ---
+    #[serde(default)]
+    pub logging: LoggingConfig,
 
     // --- Progress notifications ---
     /// Whether to send thinking progress notifications (LLM intermediate output)

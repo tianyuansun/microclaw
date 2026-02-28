@@ -461,7 +461,11 @@ async fn main() -> anyhow::Result<()> {
     builtin_skills::ensure_builtin_skills(Path::new(&skills_data_dir))?;
 
     if std::env::var("MICROCLAW_GATEWAY").is_ok() {
-        logging::init_logging(&runtime_data_dir)?;
+        logging::init_logging(
+            &runtime_data_dir,
+            config.logging.level,
+            config.logging.file.as_deref(),
+        )?;
     } else {
         logging::init_console_logging();
     }

@@ -1109,6 +1109,13 @@ pub(crate) async fn process_with_agent_impl(
                             iteration + 1,
                             preview
                         );
+                        // Log full LLM response on tool error for debugging
+                        warn!(
+                            "Tool '{}' failed (iteration {}). LLM response: {:?}",
+                            name,
+                            iteration + 1,
+                            response
+                        );
                     }
                     if let Some(tx) = event_tx {
                         let preview = if result.content.chars().count() > 160 {

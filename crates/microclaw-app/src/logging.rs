@@ -6,28 +6,114 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::fmt::writer::MakeWriter;
+use tracing_subscriber::EnvFilter;
 
 pub const LOG_FILE_PREFIX: &str = "microclaw-";
 pub const LOG_FILE_SUFFIX: &str = ".log";
 pub const LOG_RETENTION_DAYS: i64 = 30;
 
-pub fn init_logging(runtime_data_dir: &str) -> Result<()> {
-    let log_dir = PathBuf::from(runtime_data_dir).join("logs");
-    fs::create_dir_all(&log_dir)
-        .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
-    cleanup_old_logs(&log_dir, Utc::now(), LOG_RETENTION_DAYS)?;
+/// Convert numeric log level to EnvFilter.
+/// 0=off, 1=error, 2=warn, 3=info, 4=debug, 5=trace
+fn level_to_filter(level: u8) -> EnvFilter {
+    let level_str = match level {
+        0 => "off",
+        1 => "error",
+        2 => "warn",
+        3 => "info",
+        4 => "debug",
+        5 => "trace",
+        _ => "info",
+    };
+    // Allow RUST_LOG env var to override config
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level_str))
+}
 
-    let writer = HourlyLogWriter::new(log_dir, LOG_RETENTION_DAYS)?;
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_ansi(false)
-        .with_writer(writer)
-        .init();
+/// Initialize logging with configurable level and optional custom file path.
+/// If `custom_file` is set, logs go to that absolute path.
+/// If not, logs go to `runtime_data_dir/logs/` with hourly rotation.
+pub fn init_logging(runtime_data_dir: &str, level: u8, custom_file: Option<&str>) -> Result<()> {
+    if let Some(path) = custom_file {
+        // Use custom file path
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create log directory: {}", parent.display()))?;
+            }
+        }
+        let writer = SimpleFileWriter::new(&path)?;
+        tracing_subscriber::fmt()
+            .with_env_filter(level_to_filter(level))
+            .with_ansi(false)
+            .with_writer(writer)
+            .init();
+    } else {
+        // Default: hourly rotation in data_dir/runtime/logs/
+        let log_dir = PathBuf::from(runtime_data_dir).join("logs");
+        fs::create_dir_all(&log_dir)
+            .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
+        cleanup_old_logs(&log_dir, Utc::now(), LOG_RETENTION_DAYS)?;
+
+        let writer = HourlyLogWriter::new(log_dir, LOG_RETENTION_DAYS)?;
+        tracing_subscriber::fmt()
+            .with_env_filter(level_to_filter(level))
+            .with_ansi(false)
+            .with_writer(writer)
+            .init();
+    }
 
     Ok(())
+}
+
+/// Simple file writer that writes to a single file (no rotation).
+#[derive(Clone, Debug)]
+struct SimpleFileWriter {
+    state: Arc<Mutex<File>>,
+}
+
+impl SimpleFileWriter {
+    fn new(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("Failed to open log file: {}", path.display()))?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(file)),
+        })
+    }
+}
+
+impl<'a> MakeWriter<'a> for SimpleFileWriter {
+    type Writer = SimpleFileGuard;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SimpleFileGuard {
+            state: self.state.clone(),
+        }
+    }
+}
+
+struct SimpleFileGuard {
+    state: Arc<Mutex<File>>,
+}
+
+impl Write for SimpleFileGuard {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut file = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("failed to lock log writer"))?;
+        file.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut file = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("failed to lock log writer"))?;
+        file.flush()
+    }
 }
 
 pub fn init_console_logging() {

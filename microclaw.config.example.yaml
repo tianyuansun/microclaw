@@ -61,6 +61,13 @@ timezone: "UTC"
 # voice_transcription_command: "whisper-mlx --file {file}"  # Command template for local transcription
                                                                # Use {file} placeholder for the audio file path
 
+# Logging configuration
+# logging:
+#   # Log level: 0=off, 1=error, 2=warn, 3=info, 4=debug, 5=trace
+#   level: 3
+#   # Optional absolute path for log file. If not set, uses default data_dir/runtime/logs/
+#   file: "/var/log/microclaw.log"
+
 # Session management
 max_session_messages: 40
 compact_keep_recent: 20
