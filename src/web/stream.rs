@@ -154,6 +154,16 @@ pub(super) async fn api_send_stream(
                                 )
                                 .await;
                         }
+                        AgentEvent::Progress { content, tool_hint } => {
+                            run_hub
+                                .publish(
+                                    &run_id_for_events,
+                                    "progress",
+                                    json!({"content": content, "tool_hint": tool_hint}).to_string(),
+                                    run_history_limit,
+                                )
+                                .await;
+                        }
                         AgentEvent::FinalResponse { .. } => {}
                     }
                 }

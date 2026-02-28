@@ -1030,6 +1030,53 @@ async fn reply_feishu_thread(
         .ok_or_else(|| "Feishu reply_thread: missing message_id".into())
 }
 
+/// Send a message to a Feishu chat (not in a thread) and return the message ID.
+/// Used for progress notifications when topic_mode is disabled.
+async fn send_feishu_message_to_chat(
+    http_client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    chat_id: &str,
+    text: &str,
+) -> Result<String, String> {
+    let content = serde_json::json!({ "text": text }).to_string();
+    let url = format!("{base_url}/open-apis/im/v1/messages?receive_id_type=chat_id");
+    let body = serde_json::json!({
+        "receive_id": chat_id,
+        "msg_type": "text",
+        "content": content,
+    });
+
+    let resp = http_client
+        .post(&url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Feishu send_message_to_chat failed: {e}"))?;
+
+    let resp_json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Feishu send_message_to_chat parse failed: {e}"))?;
+    let code = resp_json.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+    if code != 0 {
+        let msg = resp_json
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        return Err(format!("Feishu send_message_to_chat error: code={code} msg={msg}"));
+    }
+
+    resp_json
+        .pointer("/data/message_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Feishu send_message_to_chat: missing message_id".into())
+}
+
 async fn update_feishu_message(
     http_client: &reqwest::Client,
     base_url: &str,
@@ -1551,18 +1598,8 @@ async fn run_ws_connection(
                     let cfg = feishu_cfg.clone();
                     let base = base_url.to_string();
                     let runtime_ctx = runtime.clone();
-                    let client_clone = http_client.clone();
                     tokio::spawn(async move {
-                        handle_feishu_event(
-                            state,
-                            client_clone,
-                            runtime_ctx,
-                            &cfg,
-                            &base,
-                            &bot_id,
-                            &event,
-                        )
-                        .await;
+                        handle_feishu_event(state, runtime_ctx, &cfg, &base, &bot_id, &event).await;
                     });
                 } else if frame.method == FRAME_METHOD_CONTROL {
                     // pong or other control frames — no action needed
@@ -1620,7 +1657,6 @@ async fn send_ack(write: &WsSink, request_frame: &pb::Frame) {
 /// Handle a Feishu event envelope. Dispatches im.message.receive_v1 events.
 async fn handle_feishu_event(
     app_state: Arc<AppState>,
-    http_client: reqwest::Client,
     runtime: FeishuRuntimeContext,
     feishu_cfg: &FeishuChannelConfig,
     base_url: &str,
@@ -1754,7 +1790,6 @@ async fn handle_feishu_event(
 
     handle_feishu_message(
         app_state,
-        http_client,
         runtime,
         feishu_cfg,
         base_url,
@@ -1774,7 +1809,6 @@ async fn handle_feishu_event(
 #[allow(clippy::too_many_arguments)]
 async fn handle_feishu_message(
     app_state: Arc<AppState>,
-    http_client: reqwest::Client,
     runtime: FeishuRuntimeContext,
     feishu_cfg: &FeishuChannelConfig,
     base_url: &str,
@@ -1807,6 +1841,7 @@ async fn handle_feishu_message(
     }
 
     // Handle slash commands
+    let http_client = reqwest::Client::new();
     let token = match get_token(
         &http_client,
         base_url,
@@ -2072,11 +2107,16 @@ async fn handle_feishu_message(
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
-    if topic_mode && show_progress && !message_id.is_empty() {
+    // Progress notifications work with or without topic_mode
+    // In topic_mode: reply to thread, then edit
+    // Without topic_mode: send new message to chat, then edit
+    if show_progress {
         let progress_http = http_client.clone();
         let progress_base = base_url.to_string();
         let progress_token = token.clone();
+        let progress_chat_id = external_chat_id.to_string();
         let progress_reply_to = message_id.to_string();
+        let progress_topic_mode = topic_mode;
 
         struct ProgressState {
             used_send_message_tool: bool,
@@ -2125,6 +2165,17 @@ async fn handle_feishu_message(
                         }
                         dirty = true;
                     }
+                    Ok(Some(AgentEvent::Progress { content, tool_hint })) => {
+                        // Handle progress events from agent engine
+                        if tool_hint {
+                            // Tool hint - show as tool preview
+                            lines.push(format!("↳ {}", content));
+                        } else {
+                            // Thinking progress - show as intermediate thought
+                            lines.push(format!("💭 {}", content));
+                        }
+                        dirty = true;
+                    }
                     Ok(Some(AgentEvent::Iteration { iteration })) => {
                         if iteration > 1 {
                             lines.push(format!("── iteration {} ──", iteration));
@@ -2156,15 +2207,30 @@ async fn handle_feishu_message(
                             }
                         }
                     } else {
-                        match reply_feishu_thread(
-                            &progress_http,
-                            &progress_base,
-                            &progress_token,
-                            &progress_reply_to,
-                            &text,
-                        )
-                        .await
-                        {
+                        // Create initial status message
+                        // In topic_mode: reply to thread
+                        // Without topic_mode: send new message to chat
+                        let result = if progress_topic_mode && !progress_reply_to.is_empty() {
+                            reply_feishu_thread(
+                                &progress_http,
+                                &progress_base,
+                                &progress_token,
+                                &progress_reply_to,
+                                &text,
+                            )
+                            .await
+                        } else {
+                            send_feishu_message_to_chat(
+                                &progress_http,
+                                &progress_base,
+                                &progress_token,
+                                &progress_chat_id,
+                                &text,
+                            )
+                            .await
+                        };
+
+                        match result {
                             Ok(mid) => {
                                 status_msg_id = Some(mid);
                                 edit_count = 0;
@@ -2455,21 +2521,11 @@ pub fn register_feishu_webhook(router: axum::Router, app_state: Arc<AppState>) -
                     }
 
                     let bot_id = runtime_bot_open_id(&runtime_ctx.channel_name).unwrap_or_default();
-                    let http_client = reqwest::Client::new();
 
                     // Process the event
                     let event = body.0;
                     tokio::spawn(async move {
-                        handle_feishu_event(
-                            state,
-                            http_client,
-                            runtime_ctx,
-                            &cfg,
-                            &base,
-                            &bot_id,
-                            &event,
-                        )
-                        .await;
+                        handle_feishu_event(state, runtime_ctx, &cfg, &base, &bot_id, &event).await;
                     });
 
                     axum::Json(serde_json::json!({"code": 0}))

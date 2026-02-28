@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::embedding::EmbeddingProvider;
 use crate::hooks::HookOutcome;
@@ -42,6 +42,12 @@ pub enum AgentEvent {
     },
     TextDelta {
         delta: String,
+    },
+    /// Progress notification emitted before tool execution
+    /// tool_hint=true means it's a tool call preview, false means it's thinking content
+    Progress {
+        content: String,
+        tool_hint: bool,
     },
     FinalResponse {
         text: String,
@@ -475,25 +481,11 @@ pub(crate) async fn process_with_agent_impl(
     event_tx: Option<&UnboundedSender<AgentEvent>>,
 ) -> anyhow::Result<String> {
     let chat_id = context.chat_id;
-    let request_start = std::time::Instant::now();
-    info!(
-        chat_id,
-        channel = context.caller_channel,
-        chat_type = context.chat_type,
-        has_override_prompt = override_prompt.is_some(),
-        has_image = image_data.is_some(),
-        "Agent request started"
-    );
 
     if let Some(reply) =
         maybe_handle_explicit_memory_command(state, chat_id, override_prompt, image_data.clone())
             .await?
     {
-        info!(
-            chat_id,
-            fast_path = "explicit_memory",
-            "Agent request completed via fast path"
-        );
         return Ok(reply);
     }
 
@@ -507,7 +499,6 @@ pub(crate) async fn process_with_agent_impl(
 
         if session_messages.is_empty() {
             // Corrupted session, fall back to DB history
-            info!(chat_id, "Session corrupted, falling back to DB history");
             load_messages_from_db(state, chat_id, context.chat_type, context.caller_channel).await?
         } else {
             // Get new user messages since session was last saved
@@ -516,12 +507,6 @@ pub(crate) async fn process_with_agent_impl(
                 db.get_new_user_messages_since(chat_id, &updated_at_cloned)
             })
             .await?;
-            info!(
-                chat_id,
-                session_messages = session_messages.len(),
-                new_messages = new_msgs.len(),
-                "Session resumed"
-            );
             for stored_msg in &new_msgs {
                 if run_control::is_aborted_source_message(
                     context.caller_channel,
@@ -555,7 +540,6 @@ pub(crate) async fn process_with_agent_impl(
         }
     } else {
         // No session — build from DB history
-        info!(chat_id, "No existing session, building from DB history");
         load_messages_from_db(state, chat_id, context.chat_type, context.caller_channel).await?
     };
 
@@ -626,15 +610,6 @@ pub(crate) async fn process_with_agent_impl(
     .await;
     append_plugin_context_sections(&mut system_prompt, &plugin_context);
 
-    debug!(
-        chat_id,
-        system_prompt_len = system_prompt.len(),
-        memory_context_len = memory_context.len(),
-        skills_catalog_len = skills_catalog.len(),
-        plugin_context_len = plugin_context.len(),
-        "System prompt constructed"
-    );
-
     // If image_data is present, convert the last user message to a blocks-based message with the image
     if let Some((base64_data, media_type)) = image_data {
         if let Some(last_msg) = messages.last_mut() {
@@ -665,7 +640,6 @@ pub(crate) async fn process_with_agent_impl(
 
     // Compact if messages exceed threshold
     if messages.len() > state.config.max_session_messages {
-        let msg_count_before = messages.len();
         archive_conversation(
             &state.config.data_dir,
             context.caller_channel,
@@ -680,12 +654,6 @@ pub(crate) async fn process_with_agent_impl(
             state.config.compact_keep_recent,
         )
         .await;
-        info!(
-            chat_id,
-            messages_before = msg_count_before,
-            messages_after = messages.len(),
-            "Context compacted"
-        );
     }
 
     let tool_defs = state.tools.definitions().to_vec();
@@ -807,19 +775,11 @@ pub(crate) async fn process_with_agent_impl(
         }
 
         let stop_reason = response.stop_reason.as_deref().unwrap_or("end_turn");
-        let (in_tok, out_tok) = response
-            .usage
-            .as_ref()
-            .map(|u| (u.input_tokens, u.output_tokens))
-            .unwrap_or((0, 0));
-
         info!(
-            chat_id,
-            iteration = iteration + 1,
+            "Agent iteration {} stop_reason={} chat_id={}",
+            iteration + 1,
             stop_reason,
-            input_tokens = in_tok,
-            output_tokens = out_tok,
-            "Agent iteration completed"
+            chat_id
         );
 
         if stop_reason == "end_turn" || stop_reason == "max_tokens" {
@@ -832,15 +792,6 @@ pub(crate) async fn process_with_agent_impl(
                 })
                 .collect::<Vec<_>>()
                 .join("");
-
-            if text.contains("<think>") {
-                let stripped_len = strip_thinking(&text).len();
-                let thinking_chars = text.len().saturating_sub(stripped_len);
-                debug!(
-                    chat_id,
-                    thinking_chars, "AI thinking content received at end of turn"
-                );
-            }
 
             // Strip <think> blocks unless show_thinking is enabled
             let display_text = if state.config.show_thinking {
@@ -914,31 +865,26 @@ pub(crate) async fn process_with_agent_impl(
                     text: final_text.clone(),
                 });
             }
-            info!(
-                chat_id,
-                channel = context.caller_channel,
-                iterations = iteration + 1,
-                duration_ms = request_start.elapsed().as_millis(),
-                response_len = final_text.len(),
-                "Agent request completed"
-            );
             return Ok(final_text);
         }
 
         if stop_reason == "tool_use" {
+            // Extract and send thinking content before tool execution
+            let thinking_text: String = response
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ResponseContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+
             let assistant_content: Vec<ContentBlock> = response
                 .content
                 .iter()
                 .filter_map(|block| match block {
                     ResponseContentBlock::Text { text } => {
-                        if text.contains("<think>") {
-                            let stripped_len = strip_thinking(text).len();
-                            let thinking_chars = text.len().saturating_sub(stripped_len);
-                            debug!(
-                                chat_id,
-                                thinking_chars, "AI thinking content received during tool use turn"
-                            );
-                        }
                         Some(ContentBlock::Text { text: text.clone() })
                     }
                     ResponseContentBlock::ToolUse { id, name, input } => {
@@ -951,6 +897,40 @@ pub(crate) async fn process_with_agent_impl(
                     ResponseContentBlock::Other => None,
                 })
                 .collect();
+
+            // Collect tool calls for progress notification
+            let tool_calls: Vec<(&str, &serde_json::Value)> = response
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ResponseContentBlock::ToolUse { name, input, .. } => Some((name.as_str(), input)),
+                    _ => None,
+                })
+                .collect();
+
+            // Send progress events if enabled
+            if let Some(tx) = event_tx {
+                // Send thinking progress (if any)
+                if !thinking_text.trim().is_empty() {
+                    // Strip thinking tags if present
+                    let clean_thinking = strip_thinking(&thinking_text);
+                    if !clean_thinking.trim().is_empty() {
+                        let _ = tx.send(AgentEvent::Progress {
+                            content: clean_thinking.trim().to_string(),
+                            tool_hint: false,
+                        });
+                    }
+                }
+
+                // Send tool hint progress
+                if !tool_calls.is_empty() {
+                    let hint = format_tool_hint(&tool_calls);
+                    let _ = tx.send(AgentEvent::Progress {
+                        content: hint,
+                        tool_hint: true,
+                    });
+                }
+            }
 
             messages.push(Message {
                 role: "assistant".into(),
@@ -1010,12 +990,7 @@ pub(crate) async fn process_with_agent_impl(
                             input: effective_input.clone(),
                         });
                     }
-                    info!(
-                        chat_id,
-                        tool = %name,
-                        iteration = iteration + 1,
-                        "Executing tool"
-                    );
+                    info!("Executing tool: {} (iteration {})", name, iteration + 1);
                     let started = std::time::Instant::now();
                     let mut executed_input = effective_input.clone();
                     let mut result = state
@@ -1129,11 +1104,9 @@ pub(crate) async fn process_with_agent_impl(
                             result.content.clone()
                         };
                         warn!(
-                            chat_id,
-                            tool = %name,
-                            iteration = iteration + 1,
-                            error_type = ?result.error_type,
-                            "Tool execution failed: {}",
+                            "Tool '{}' failed (iteration {}): {}",
+                            name,
+                            iteration + 1,
                             preview
                         );
                     }
@@ -1738,6 +1711,63 @@ pub(crate) fn strip_thinking(text: &str) -> String {
     }
     result.push_str(rest);
     result.trim().to_string()
+}
+
+/// Format tool calls as a concise hint string.
+/// Example output: `web_search("query")`, `bash("ls -la")`, `read_file("path")`
+fn format_tool_hint(tool_calls: &[(&str, &serde_json::Value)]) -> String {
+    fn fmt_one(name: &str, input: &serde_json::Value) -> String {
+        // Try to get a representative value for display
+        let display_val = input
+            .as_object()
+            .and_then(|obj| {
+                // Try common parameter names
+                obj.get("query")
+                    .or_else(|| obj.get("command"))
+                    .or_else(|| obj.get("url"))
+                    .or_else(|| obj.get("file_path"))
+                    .or_else(|| obj.get("path"))
+                    .or_else(|| obj.get("prompt"))
+                    .or_else(|| obj.get("text"))
+                    .or_else(|| obj.values().next())
+            })
+            .or_else(|| {
+                // If no object, try as string/number
+                if input.is_string() || input.is_number() {
+                    Some(input)
+                } else {
+                    None
+                }
+            });
+
+        if let Some(val) = display_val {
+            match val {
+                serde_json::Value::String(s) => {
+                    if s.len() > 50 {
+                        format!("{}(\"{}…\")", name, &s[..50])
+                    } else {
+                        format!("{}(\"{}\")", name, s)
+                    }
+                }
+                _ => {
+                    let s = val.to_string();
+                    if s.len() > 50 {
+                        format!("{}({}…)", name, &s[..50])
+                    } else {
+                        format!("{}({})", name, s)
+                    }
+                }
+            }
+        } else {
+            name.to_string()
+        }
+    }
+
+    tool_calls
+        .iter()
+        .map(|(name, input)| fmt_one(name, input))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Extract text content from a Message for summarization/display.

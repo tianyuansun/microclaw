@@ -148,6 +148,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_send_progress() -> bool {
+    true
+}
+
+fn default_send_tool_hints() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClawHubConfig {
     /// ClawHub registry URL
@@ -330,6 +338,14 @@ pub struct Config {
     /// Example: "whisper-mlx --file {file}" or "/usr/local/bin/whisper {file}"
     #[serde(default, rename = "voice_transcription_command")]
     pub voice_transcription_command: Option<String>,
+
+    // --- Progress notifications ---
+    /// Whether to send thinking progress notifications (LLM intermediate output)
+    #[serde(default = "default_send_progress")]
+    pub send_progress: bool,
+    /// Whether to send tool hint progress notifications (tool call previews before execution)
+    #[serde(default = "default_send_tool_hints")]
+    pub send_tool_hints: bool,
 
     // --- Channel registry (new dynamic config) ---
     /// Per-channel configuration. Keys are channel names (e.g. "telegram", "discord", "slack", "irc", "web").
