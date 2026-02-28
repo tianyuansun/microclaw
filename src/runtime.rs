@@ -10,11 +10,7 @@ use tracing::{info, warn};
 use crate::channels::dingtalk::{build_dingtalk_runtime_contexts, DingTalkRuntimeContext};
 use crate::channels::email::{build_email_runtime_contexts, EmailRuntimeContext};
 use crate::channels::feishu::{build_feishu_runtime_contexts, FeishuRuntimeContext};
-use crate::channels::nostr::{build_nostr_runtime_contexts, NostrRuntimeContext};
-use crate::channels::signal::{build_signal_runtime_contexts, SignalRuntimeContext};
-use crate::channels::{
-    DingTalkAdapter, EmailAdapter, FeishuAdapter, NostrAdapter, SignalAdapter,
-};
+use crate::channels::{DingTalkAdapter, EmailAdapter, FeishuAdapter};
 use crate::config::Config;
 use crate::embedding::EmbeddingProvider;
 use crate::hooks::HookManager;
@@ -174,44 +170,6 @@ pub async fn run(
                 .map(|model| (runtime.channel_name.clone(), model))
         },
     );
-    let nostr_runtimes: Vec<NostrRuntimeContext> = prepare_channel_runtimes(
-        &config,
-        "nostr",
-        &mut registry,
-        &mut llm_model_overrides,
-        build_nostr_runtime_contexts,
-        |runtime, reg| {
-            reg.register(Arc::new(NostrAdapter::new(
-                runtime.channel_name.clone(),
-                runtime.publish_command.clone(),
-            )));
-        },
-        |runtime| {
-            runtime
-                .model
-                .clone()
-                .map(|model| (runtime.channel_name.clone(), model))
-        },
-    );
-    let signal_runtimes: Vec<SignalRuntimeContext> = prepare_channel_runtimes(
-        &config,
-        "signal",
-        &mut registry,
-        &mut llm_model_overrides,
-        build_signal_runtime_contexts,
-        |runtime, reg| {
-            reg.register(Arc::new(SignalAdapter::new(
-                runtime.channel_name.clone(),
-                runtime.send_command.clone(),
-            )));
-        },
-        |runtime| {
-            runtime
-                .model
-                .clone()
-                .map(|model| (runtime.channel_name.clone(), model))
-        },
-    );
     let dingtalk_runtimes: Vec<DingTalkRuntimeContext> = prepare_channel_runtimes(
         &config,
         "dingtalk",
@@ -305,30 +263,6 @@ pub async fn run(
         );
     }
 
-    let has_nostr = !nostr_runtimes.is_empty();
-    if has_nostr {
-        spawn_channel_runtimes(
-            state.clone(),
-            nostr_runtimes,
-            |channel_state, runtime_ctx| async move {
-                info!("Starting Nostr adapter '{}'", runtime_ctx.channel_name);
-                crate::channels::nostr::start_nostr_bot(channel_state, runtime_ctx).await;
-            },
-        );
-    }
-
-    let has_signal = !signal_runtimes.is_empty();
-    if has_signal {
-        spawn_channel_runtimes(
-            state.clone(),
-            signal_runtimes,
-            |channel_state, runtime_ctx| async move {
-                info!("Starting Signal adapter '{}'", runtime_ctx.channel_name);
-                crate::channels::signal::start_signal_bot(channel_state, runtime_ctx).await;
-            },
-        );
-    }
-
     let has_dingtalk = !dingtalk_runtimes.is_empty();
     if has_dingtalk {
         spawn_channel_runtimes(
@@ -356,8 +290,6 @@ pub async fn run(
         has_web,
         has_feishu,
         has_email,
-        has_nostr,
-        has_signal,
         has_dingtalk,
     ]
     .into_iter()
@@ -371,7 +303,7 @@ pub async fn run(
         Ok(())
     } else {
         Err(anyhow!(
-            "No channel is enabled. Configure channels.<name>.enabled for Feishu, Email, Nostr, Signal, DingTalk, or web."
+            "No channel is enabled. Configure channels.<name>.enabled for Feishu, Email, DingTalk, or web."
         ))
     }
 }

@@ -90,12 +90,6 @@ channels:
   #   enabled: false
   #   from_address: "bot@example.com"
   #   sendmail_path: "/usr/sbin/sendmail"
-  # nostr:
-  #   enabled: false
-  #   publish_command: "nostril --enclave"
-  # signal:
-  #   enabled: false
-  #   send_command: "signal-cli send"
   # dingtalk:
   #   enabled: false
   #   robot_webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxx"

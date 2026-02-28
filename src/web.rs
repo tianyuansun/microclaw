@@ -1639,8 +1639,6 @@ pub async fn start_web_server(state: Arc<AppState>) {
     let mut router = build_router(web_state);
     router = crate::channels::feishu::register_feishu_webhook(router, state.clone());
     router = crate::channels::email::register_email_webhook(router, state.clone());
-    router = crate::channels::nostr::register_nostr_webhook(router, state.clone());
-    router = crate::channels::signal::register_signal_webhook(router, state.clone());
     router = crate::channels::dingtalk::register_dingtalk_webhook(router, state.clone());
 
     let addr = format!("{}:{}", state.config.web_host, state.config.web_port);

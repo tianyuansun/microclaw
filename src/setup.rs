@@ -28,7 +28,7 @@ use microclaw_core::error::MicroClawError;
 use microclaw_core::text::floor_char_boundary;
 
 use crate::channels::{
-    dingtalk, email, feishu, nostr, signal,
+    dingtalk, email, feishu,
 };
 use crate::setup_def::DynamicChannelDef;
 
@@ -36,8 +36,6 @@ use crate::setup_def::DynamicChannelDef;
 const DYNAMIC_CHANNELS: &[DynamicChannelDef] = &[
     feishu::SETUP_DEF,
     email::SETUP_DEF,
-    nostr::SETUP_DEF,
-    signal::SETUP_DEF,
     dingtalk::SETUP_DEF,
 ];
 
@@ -750,7 +748,7 @@ impl SetupApp {
             llm_override_picker: None,
         };
 
-        // Generate fields for dynamic channels (feishu, email, nostr, signal, dingtalk, etc.)
+        // Generate fields for dynamic channels (feishu, email, dingtalk, etc.)
         for ch in DYNAMIC_CHANNELS {
             let bot_count_key = dynamic_bot_count_field_key(ch.name);
             app.fields.push(Field {
