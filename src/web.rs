@@ -20,7 +20,6 @@ use crate::chat_commands::{
     build_model_response, build_status_response, maybe_handle_plugin_command,
 };
 use crate::config::{Config, WorkingDirIsolation};
-use crate::otlp::{OtlpExporter, OtlpMetricSnapshot};
 use crate::runtime::AppState;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel::{
@@ -78,7 +77,6 @@ struct WebState {
     request_hub: RequestHub,
     auth_hub: AuthHub,
     metrics: Arc<Mutex<WebMetrics>>,
-    otlp: Option<Arc<OtlpExporter>>,
     limits: WebLimits,
 }
 
@@ -637,26 +635,6 @@ async fn persist_metrics_snapshot(state: &WebState) -> Result<(), (StatusCode, S
     })
     .await;
 
-    if let Some(exporter) = state.otlp.clone() {
-        let metric_snapshot = OtlpMetricSnapshot {
-            timestamp_unix_nano: now.timestamp_nanos_opt().unwrap_or(0) as u64,
-            http_requests: snapshot.http_requests,
-            llm_completions: snapshot.llm_completions,
-            llm_input_tokens: snapshot.llm_input_tokens,
-            llm_output_tokens: snapshot.llm_output_tokens,
-            tool_executions: snapshot.tool_executions,
-            mcp_calls: snapshot.mcp_calls,
-            mcp_rate_limited_rejections: snapshot.mcp_rate_limited_rejections,
-            mcp_bulkhead_rejections: snapshot.mcp_bulkhead_rejections,
-            mcp_circuit_open_rejections: snapshot.mcp_circuit_open_rejections,
-            active_sessions,
-        };
-        tokio::spawn(async move {
-            if let Err(e) = exporter.enqueue_metrics(metric_snapshot) {
-                tracing::warn!("otlp export failed: {}", e);
-            }
-        });
-    }
     Ok(())
 }
 
@@ -1640,7 +1618,6 @@ pub async fn start_web_server(state: Arc<AppState>) {
         request_hub: RequestHub::default(),
         auth_hub: AuthHub::default(),
         metrics: Arc::new(Mutex::new(WebMetrics::default())),
-        otlp: OtlpExporter::from_config(&state.config),
         limits,
     };
 
@@ -1948,7 +1925,6 @@ mod tests {
             request_hub: RequestHub::default(),
             auth_hub: AuthHub::default(),
             metrics: Arc::new(Mutex::new(WebMetrics::default())),
-            otlp: None,
             limits,
         }
     }
