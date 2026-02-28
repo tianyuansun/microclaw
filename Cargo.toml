@@ -58,6 +58,7 @@ include_dir = "0.7"
 async-stream = "0.3"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", features = ["ring"] }
 argon2 = "0.5"
 opentelemetry-proto = { version = "0.28", features = ["gen-tonic-messages"] }
 prost = "0.13"
