@@ -811,12 +811,7 @@ struct UpdateConfigRequest {
     working_dir_isolation: Option<WorkingDirIsolation>,
     high_risk_tool_user_confirmation_required: Option<bool>,
 
-    telegram_bot_token: Option<String>,
     bot_username: Option<String>,
-    telegram_bot_username: Option<String>,
-    discord_bot_token: Option<String>,
-    discord_allowed_channels: Option<Vec<u64>>,
-    discord_bot_username: Option<String>,
     slack_bot_username: Option<String>,
     feishu_bot_username: Option<String>,
     web_bot_username: Option<String>,
@@ -1666,12 +1661,10 @@ pub async fn start_web_server(state: Arc<AppState>) {
 
     let mut router = build_router(web_state);
     router = crate::channels::feishu::register_feishu_webhook(router, state.clone());
-    router = crate::channels::whatsapp::register_whatsapp_webhook(router, state.clone());
     router = crate::channels::email::register_email_webhook(router, state.clone());
     router = crate::channels::nostr::register_nostr_webhook(router, state.clone());
     router = crate::channels::signal::register_signal_webhook(router, state.clone());
     router = crate::channels::dingtalk::register_dingtalk_webhook(router, state.clone());
-    router = crate::channels::qq::register_qq_webhook(router, state.clone());
 
     let addr = format!("{}:{}", state.config.web_host, state.config.web_port);
     let listener = match tokio::net::TcpListener::bind(&addr).await {

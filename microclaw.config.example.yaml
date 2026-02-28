@@ -25,7 +25,7 @@ max_tokens: 8192
 max_tool_iterations: 100
 # Chat history context size
 max_history_messages: 50
-# Maximum inbound Telegram document size in MB
+# Maximum inbound document size in MB
 max_document_size_mb: 100
 # Estimated token budget for injecting structured memories into system prompt
 memory_token_budget: 1500
@@ -75,31 +75,6 @@ compact_keep_recent: 20
 channels:
   web:
     enabled: true
-  telegram:
-    enabled: false
-    bot_token: ""
-    bot_username: ""
-    # Telegram group allowlist (empty = allow all groups)
-    # allowed_groups: []
-    # Telegram DM allowlist by sender user_id (empty = allow all users in private chats)
-    # allowed_user_ids: [123456789]
-    # Multi-account example:
-    # default_account: "main"
-    # accounts:
-    #   main:
-    #     enabled: true
-    #     bot_token: "123456:ABC-DEF..."
-    #     bot_username: "my_bot"
-    #     allowed_user_ids: [123456789]
-  discord:
-    enabled: false
-    bot_token: ""
-    # allowed_channels: []
-  # slack:
-  #   enabled: false
-  #   bot_token: "xoxb-..."
-  #   app_token: "xapp-..."
-  #   allowed_channels: []
   # feishu:
   #   enabled: false
   #   app_id: "cli_xxx"
@@ -111,24 +86,19 @@ channels:
   #   # webhook_path: "/feishu/events"
   #   # verification_token: ""
   #   # encrypt_key: ""
-  # matrix:
+  # email:
   #   enabled: false
-  #   homeserver_url: "https://matrix.org"
-  #   access_token: "syt_xxx"
-  #   bot_user_id: "@microclaw:matrix.org"
-  #   # allowed_room_ids: ["!roomid:matrix.org"]
-  #   # allowed_user_ids: ["@alice:matrix.org"]   # DM sender allowlist (empty = allow all DMs)
-  #   # mention_required: true
-  # whatsapp:
+  #   from_address: "bot@example.com"
+  #   sendmail_path: "/usr/sbin/sendmail"
+  # nostr:
   #   enabled: false
-  #   access_token: "EAA..."
-  #   phone_number_id: "1234567890"
-  #   webhook_verify_token: ""
-  #   webhook_path: "/whatsapp/webhook"
-  #   # Optional sender allowlist
-  #   # allowed_user_ids: ["15551234567"]
-  #   # Optional Graph API version override
-  #   # api_version: "v21.0"
+  #   publish_command: "nostril --enclave"
+  # signal:
+  #   enabled: false
+  #   send_command: "signal-cli send"
+  # dingtalk:
+  #   enabled: false
+  #   robot_webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxx"
 
 # Local web UI (optional)
 # Channel on/off is controlled by `channels.web.enabled`.

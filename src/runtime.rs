@@ -8,23 +8,12 @@ use futures_util::FutureExt;
 use tracing::{info, warn};
 
 use crate::channels::dingtalk::{build_dingtalk_runtime_contexts, DingTalkRuntimeContext};
-use crate::channels::discord::{build_discord_runtime_contexts, DiscordRuntimeContext};
 use crate::channels::email::{build_email_runtime_contexts, EmailRuntimeContext};
 use crate::channels::feishu::{build_feishu_runtime_contexts, FeishuRuntimeContext};
-use crate::channels::imessage::{build_imessage_runtime_contexts, IMessageRuntimeContext};
-use crate::channels::matrix::{build_matrix_runtime_contexts, MatrixRuntimeContext};
 use crate::channels::nostr::{build_nostr_runtime_contexts, NostrRuntimeContext};
-use crate::channels::qq::{build_qq_runtime_contexts, QQRuntimeContext};
 use crate::channels::signal::{build_signal_runtime_contexts, SignalRuntimeContext};
-use crate::channels::slack::{build_slack_runtime_contexts, SlackRuntimeContext};
-use crate::channels::telegram::{
-    build_telegram_runtime_contexts, TelegramChannelConfig, TelegramRuntimeContext,
-};
-use crate::channels::whatsapp::{build_whatsapp_runtime_contexts, WhatsAppRuntimeContext};
 use crate::channels::{
-    DingTalkAdapter, DiscordAdapter, EmailAdapter, FeishuAdapter, IMessageAdapter, IrcAdapter,
-    MatrixAdapter, NostrAdapter, QQAdapter, SignalAdapter, SlackAdapter, TelegramAdapter,
-    WhatsAppAdapter,
+    DingTalkAdapter, EmailAdapter, FeishuAdapter, NostrAdapter, SignalAdapter,
 };
 use crate::config::Config;
 use crate::embedding::EmbeddingProvider;
@@ -142,47 +131,8 @@ pub async fn run(
 
     // Build channel registry from config
     let mut registry = ChannelRegistry::new();
-    let mut telegram_runtimes: Vec<(teloxide::Bot, TelegramRuntimeContext)> = Vec::new();
     let mut llm_model_overrides: HashMap<String, String> = HashMap::new();
-    let discord_runtimes: Vec<(String, DiscordRuntimeContext)> = prepare_channel_runtimes(
-        &config,
-        "discord",
-        &mut registry,
-        &mut llm_model_overrides,
-        build_discord_runtime_contexts,
-        |runtime, reg| {
-            reg.register(Arc::new(DiscordAdapter::new(
-                runtime.1.channel_name.clone(),
-                runtime.0.clone(),
-            )));
-        },
-        |runtime| {
-            runtime
-                .1
-                .model
-                .clone()
-                .map(|model| (runtime.1.channel_name.clone(), model))
-        },
-    );
-    let slack_runtimes: Vec<SlackRuntimeContext> = prepare_channel_runtimes(
-        &config,
-        "slack",
-        &mut registry,
-        &mut llm_model_overrides,
-        build_slack_runtime_contexts,
-        |runtime, reg| {
-            reg.register(Arc::new(SlackAdapter::new(
-                runtime.channel_name.clone(),
-                runtime.bot_token.clone(),
-            )));
-        },
-        |runtime| {
-            runtime
-                .model
-                .clone()
-                .map(|model| (runtime.channel_name.clone(), model))
-        },
-    );
+
     let feishu_runtimes: Vec<FeishuRuntimeContext> = prepare_channel_runtimes(
         &config,
         "feishu",
@@ -195,61 +145,6 @@ pub async fn run(
                 runtime.config.app_id.clone(),
                 runtime.config.app_secret.clone(),
                 runtime.config.domain.clone(),
-            )));
-        },
-        |runtime| {
-            runtime
-                .model
-                .clone()
-                .map(|model| (runtime.channel_name.clone(), model))
-        },
-    );
-    let matrix_runtimes: Vec<MatrixRuntimeContext> = prepare_channel_runtimes(
-        &config,
-        "matrix",
-        &mut registry,
-        &mut llm_model_overrides,
-        build_matrix_runtime_contexts,
-        |runtime, reg| {
-            reg.register(Arc::new(MatrixAdapter::new(
-                runtime.channel_name.clone(),
-                runtime.homeserver_url.clone(),
-                runtime.access_token.clone(),
-            )));
-        },
-        |_| None,
-    );
-    let whatsapp_runtimes: Vec<WhatsAppRuntimeContext> = prepare_channel_runtimes(
-        &config,
-        "whatsapp",
-        &mut registry,
-        &mut llm_model_overrides,
-        build_whatsapp_runtime_contexts,
-        |runtime, reg| {
-            reg.register(Arc::new(WhatsAppAdapter::new(
-                runtime.channel_name.clone(),
-                runtime.access_token.clone(),
-                runtime.phone_number_id.clone(),
-                runtime.api_version.clone(),
-            )));
-        },
-        |runtime| {
-            runtime
-                .model
-                .clone()
-                .map(|model| (runtime.channel_name.clone(), model))
-        },
-    );
-    let imessage_runtimes: Vec<IMessageRuntimeContext> = prepare_channel_runtimes(
-        &config,
-        "imessage",
-        &mut registry,
-        &mut llm_model_overrides,
-        build_imessage_runtime_contexts,
-        |runtime, reg| {
-            reg.register(Arc::new(IMessageAdapter::new(
-                runtime.channel_name.clone(),
-                runtime.service.clone(),
             )));
         },
         |runtime| {
@@ -336,67 +231,8 @@ pub async fn run(
                 .map(|model| (runtime.channel_name.clone(), model))
         },
     );
-    let qq_runtimes: Vec<QQRuntimeContext> = prepare_channel_runtimes(
-        &config,
-        "qq",
-        &mut registry,
-        &mut llm_model_overrides,
-        build_qq_runtime_contexts,
-        |runtime, reg| {
-            reg.register(Arc::new(QQAdapter::new(
-                runtime.channel_name.clone(),
-                runtime.send_command.clone(),
-            )));
-        },
-        |runtime| {
-            runtime
-                .model
-                .clone()
-                .map(|model| (runtime.channel_name.clone(), model))
-        },
-    );
-    let mut has_irc = false;
+
     let mut has_web = false;
-
-    if config.channel_enabled("telegram") {
-        if let Some(tg_cfg) = config.channel_config::<TelegramChannelConfig>("telegram") {
-            for (token, runtime_ctx) in build_telegram_runtime_contexts(&config) {
-                if let Some(model) = runtime_ctx.model.clone() {
-                    llm_model_overrides.insert(runtime_ctx.channel_name.clone(), model);
-                }
-                let bot = teloxide::Bot::new(&token);
-                registry.register(Arc::new(TelegramAdapter::new(
-                    runtime_ctx.channel_name.clone(),
-                    bot.clone(),
-                    tg_cfg.clone(),
-                )));
-                telegram_runtimes.push((bot, runtime_ctx));
-            }
-        }
-    }
-
-    let mut irc_adapter: Option<Arc<IrcAdapter>> = None;
-    if config.channel_enabled("irc") {
-        if let Some(irc_cfg) =
-            config.channel_config::<crate::channels::irc::IrcChannelConfig>("irc")
-        {
-            if !irc_cfg.server.trim().is_empty() && !irc_cfg.nick.trim().is_empty() {
-                if let Some(model) = irc_cfg
-                    .model
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(ToOwned::to_owned)
-                {
-                    llm_model_overrides.insert("irc".to_string(), model);
-                }
-                has_irc = true;
-                let adapter = Arc::new(IrcAdapter::new(380));
-                registry.register(adapter.clone());
-                irc_adapter = Some(adapter);
-            }
-        }
-    }
 
     if config.channel_enabled("web") {
         has_web = true;
@@ -439,36 +275,6 @@ pub async fn run(
     crate::scheduler::spawn_scheduler(state.clone());
     crate::scheduler::spawn_reflector(state.clone());
 
-    let has_discord = !discord_runtimes.is_empty();
-    if has_discord {
-        spawn_channel_runtimes(
-            state.clone(),
-            discord_runtimes,
-            |channel_state, (token, runtime_ctx)| async move {
-                info!(
-                    "Starting Discord bot adapter '{}' as @{}",
-                    runtime_ctx.channel_name, runtime_ctx.bot_username
-                );
-                crate::discord::start_discord_bot(channel_state, runtime_ctx, &token).await;
-            },
-        );
-    }
-
-    let has_slack = !slack_runtimes.is_empty();
-    if has_slack {
-        spawn_channel_runtimes(
-            state.clone(),
-            slack_runtimes,
-            |channel_state, runtime_ctx| async move {
-                info!(
-                    "Starting Slack bot adapter '{}' as @{} (Socket Mode)",
-                    runtime_ctx.channel_name, runtime_ctx.bot_username
-                );
-                crate::channels::slack::start_slack_bot(channel_state, runtime_ctx).await;
-            },
-        );
-    }
-
     let has_feishu = !feishu_runtimes.is_empty();
     if has_feishu {
         spawn_channel_runtimes(
@@ -480,51 +286,6 @@ pub async fn run(
                     runtime_ctx.channel_name, runtime_ctx.bot_username
                 );
                 crate::channels::feishu::start_feishu_bot(channel_state, runtime_ctx).await;
-            },
-        );
-    }
-
-    let has_matrix = !matrix_runtimes.is_empty();
-    if has_matrix {
-        spawn_channel_runtimes(
-            state.clone(),
-            matrix_runtimes,
-            |channel_state, runtime_ctx| async move {
-                info!(
-                    "Starting Matrix bot adapter '{}' as {}",
-                    runtime_ctx.channel_name, runtime_ctx.bot_user_id
-                );
-                crate::channels::matrix::start_matrix_bot(channel_state, runtime_ctx).await;
-            },
-        );
-    }
-
-    let has_whatsapp = !whatsapp_runtimes.is_empty();
-    if has_whatsapp {
-        spawn_channel_runtimes(
-            state.clone(),
-            whatsapp_runtimes,
-            |channel_state, runtime_ctx| async move {
-                info!(
-                    "Starting WhatsApp adapter '{}' (webhook mode, phone_number_id={})",
-                    runtime_ctx.channel_name, runtime_ctx.phone_number_id
-                );
-                crate::channels::whatsapp::start_whatsapp_bot(channel_state, runtime_ctx).await;
-            },
-        );
-    }
-
-    let has_imessage = !imessage_runtimes.is_empty();
-    if has_imessage {
-        spawn_channel_runtimes(
-            state.clone(),
-            imessage_runtimes,
-            |channel_state, runtime_ctx| async move {
-                info!(
-                    "Starting iMessage adapter '{}' (service={})",
-                    runtime_ctx.channel_name, runtime_ctx.service
-                );
-                crate::channels::imessage::start_imessage_bot(channel_state, runtime_ctx).await;
             },
         );
     }
@@ -580,18 +341,6 @@ pub async fn run(
         );
     }
 
-    let has_qq = !qq_runtimes.is_empty();
-    if has_qq {
-        spawn_channel_runtimes(
-            state.clone(),
-            qq_runtimes,
-            |channel_state, runtime_ctx| async move {
-                info!("Starting QQ adapter '{}'", runtime_ctx.channel_name);
-                crate::channels::qq::start_qq_bot(channel_state, runtime_ctx).await;
-            },
-        );
-    }
-
     if has_web {
         let web_state = state.clone();
         info!(
@@ -603,46 +352,13 @@ pub async fn run(
         });
     }
 
-    let has_telegram = !telegram_runtimes.is_empty();
-    if has_telegram {
-        for (bot, tg_ctx) in telegram_runtimes {
-            let telegram_state = state.clone();
-            info!(
-                "Starting Telegram bot adapter '{}' as @{}",
-                tg_ctx.channel_name, tg_ctx.bot_username
-            );
-            spawn_guarded(format!("telegram:{}", tg_ctx.channel_name), async move {
-                let _ = crate::telegram::start_telegram_bot(telegram_state, bot, tg_ctx).await;
-            });
-        }
-    }
-
-    if has_irc {
-        let irc_state = state.clone();
-        let Some(irc_adapter) = irc_adapter else {
-            return Err(anyhow!("IRC adapter state is missing"));
-        };
-        info!("Starting IRC bot");
-        spawn_guarded("irc".to_string(), async move {
-            crate::channels::irc::start_irc_bot(irc_state, irc_adapter).await;
-        });
-    }
-
     let has_active_channels = [
-        has_telegram,
         has_web,
-        has_discord,
-        has_slack,
         has_feishu,
-        has_matrix,
-        has_irc,
-        has_whatsapp,
-        has_imessage,
         has_email,
         has_nostr,
         has_signal,
         has_dingtalk,
-        has_qq,
     ]
     .into_iter()
     .any(|v| v);
@@ -655,7 +371,7 @@ pub async fn run(
         Ok(())
     } else {
         Err(anyhow!(
-            "No channel is enabled. Configure channels.<name>.enabled (or legacy channel settings) for Telegram, Discord, Slack, Feishu, Matrix, WhatsApp, iMessage, Email, Nostr, Signal, DingTalk, QQ, IRC, or web."
+            "No channel is enabled. Configure channels.<name>.enabled for Feishu, Email, Nostr, Signal, DingTalk, or web."
         ))
     }
 }

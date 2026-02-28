@@ -502,17 +502,8 @@ pub(super) async fn api_update_config(
     if let Some(v) = body.high_risk_tool_user_confirmation_required {
         cfg.high_risk_tool_user_confirmation_required = v;
     }
-    if let Some(v) = body.telegram_bot_token {
-        cfg.telegram_bot_token = v;
-    }
     if let Some(v) = body.bot_username {
         cfg.bot_username = v;
-    }
-    if let Some(v) = body.discord_bot_token {
-        cfg.discord_bot_token = if v.trim().is_empty() { None } else { Some(v) };
-    }
-    if let Some(v) = body.discord_allowed_channels {
-        cfg.discord_allowed_channels = v;
     }
     let mut set_channel_bot_username = |channel: &str, value: Option<&str>| {
         if let Some(v) = value.map(str::trim) {
@@ -531,8 +522,6 @@ pub(super) async fn api_update_config(
             }
         }
     };
-    set_channel_bot_username("telegram", body.telegram_bot_username.as_deref());
-    set_channel_bot_username("discord", body.discord_bot_username.as_deref());
     set_channel_bot_username("slack", body.slack_bot_username.as_deref());
     set_channel_bot_username("feishu", body.feishu_bot_username.as_deref());
     set_channel_bot_username("web", body.web_bot_username.as_deref());

@@ -1,10 +1,10 @@
 # MicroClaw
 
-MicroClaw is a Rust multi-platform chat bot with a channel-agnostic core and platform adapters. It currently supports Telegram, Discord, Slack, Feishu/Lark, and Web, and can be extended to more platforms. It provides agentic tool execution, web search, scheduled tasks, and persistent memory. Inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) (TypeScript/WhatsApp), incorporating some of its design ideas.
+MicroClaw is a Rust multi-platform chat bot with a channel-agnostic core and platform adapters. It currently supports Feishu/Lark, Web, Email, Nostr, Signal, and DingTalk, and can be extended to more platforms. It provides agentic tool execution, web search, scheduled tasks, and persistent memory. Inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) (TypeScript/WhatsApp), incorporating some of its design ideas.
 
 ## Tech stack
 
-Rust 2021, Tokio, teloxide 0.17, serenity 0.12, provider-agnostic LLM runtime (Anthropic + OpenAI-compatible), SQLite (rusqlite bundled), cron crate for scheduling.
+Rust 2021, Tokio, provider-agnostic LLM runtime (Anthropic + OpenAI-compatible), SQLite (rusqlite bundled), cron crate for scheduling.
 
 ## Directory overview
 
@@ -26,7 +26,7 @@ Rust 2021, Tokio, teloxide 0.17, serenity 0.12, provider-agnostic LLM runtime (A
 - `src/web.rs` -- web API routes and streaming
 - `src/memory.rs` -- file-memory manager (`runtime/groups/.../AGENTS.md`)
 - `src/scheduler.rs` -- background scheduler + memory reflector loops
-- `src/channels/*.rs` -- Telegram/Discord/Slack/Feishu adapters
+- `src/channels/*.rs` -- Feishu/Email/Nostr/Signal/DingTalk adapters
 - `src/tools/*.rs` -- concrete built-in tools; registry assembly in `src/tools/mod.rs`
 
 ## Key patterns
@@ -41,7 +41,7 @@ Rust 2021, Tokio, teloxide 0.17, serenity 0.12, provider-agnostic LLM runtime (A
 - **Scheduler**: `tokio::spawn` loop, polls DB for due tasks, calls `process_with_agent` with `override_prompt`
 - **Typing**: spawned task sends typing action every 4s, aborted when response is ready
 - **Path guard**: sensitive paths (.ssh, .aws, .env, credentials, etc.) are blocked in file tools via `path_guard` module
-- **Platform-extensible core**: Telegram/Discord/Slack/Feishu/Web adapters reuse `process_with_agent`; new platforms integrate through the same core loop
+- **Platform-extensible core**: Feishu/Web/Email/Nostr/Signal/DingTalk adapters reuse `process_with_agent`; new platforms integrate through the same core loop
 - **SOUL.md**: optional personality file injected into system prompt. Loaded from `soul_path` config, `data_dir/SOUL.md`, or `./SOUL.md`. Per-chat overrides via `data_dir/runtime/groups/{chat_id}/SOUL.md`
 
 ## Build & run
@@ -87,4 +87,4 @@ Core persistence is provided by `microclaw-storage` (`Database` wrapper over SQL
 - Messages are stored for all chats regardless of whether bot responds
 - In groups, bot only responds to @mentions
 - Consecutive same-role messages are merged before sending to the configured LLM provider
-- Responses > 4096 chars are split at newline boundaries (Telegram), > 2000 chars for Discord, > 4000 chars for Slack/Feishu
+- Responses > 4000 chars are split at newline boundaries for Feishu

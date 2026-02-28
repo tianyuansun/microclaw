@@ -252,89 +252,10 @@ fn migrate_channel_accounts(
     true
 }
 
-fn ensure_channel_mapping<'a>(cfg: &'a mut Config, name: &str) -> &'a mut serde_yaml::Mapping {
-    let entry = cfg
-        .channels
-        .entry(name.to_string())
-        .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
-    if !entry.is_mapping() {
-        *entry = serde_yaml::Value::Mapping(Default::default());
-    }
-    entry
-        .as_mapping_mut()
-        .expect("channel config should be mapping")
-}
-
 fn migrate_channels_to_accounts(cfg: &mut Config) -> usize {
     let mut changed = 0usize;
 
-    let telegram_token_legacy = cfg.telegram_bot_token.clone();
-    let telegram_bot_username_legacy = cfg.bot_username.clone();
-    let telegram_allowed_groups_legacy = cfg.allowed_groups.clone();
-    let discord_token_legacy = cfg.discord_bot_token.clone();
-    let discord_allowed_channels_legacy = cfg.discord_allowed_channels.clone();
-
-    if !telegram_token_legacy.trim().is_empty() {
-        let telegram = ensure_channel_mapping(cfg, "telegram");
-        telegram.insert(
-            serde_yaml::Value::String("bot_token".to_string()),
-            serde_yaml::Value::String(telegram_token_legacy),
-        );
-    }
-    if !telegram_bot_username_legacy.trim().is_empty() {
-        let telegram = ensure_channel_mapping(cfg, "telegram");
-        telegram
-            .entry(serde_yaml::Value::String("bot_username".to_string()))
-            .or_insert_with(|| serde_yaml::Value::String(telegram_bot_username_legacy));
-    }
-    if !telegram_allowed_groups_legacy.is_empty() {
-        let telegram = ensure_channel_mapping(cfg, "telegram");
-        let groups = telegram_allowed_groups_legacy
-            .iter()
-            .map(|v| serde_yaml::Value::Number(serde_yaml::Number::from(*v)))
-            .collect::<Vec<_>>();
-        telegram
-            .entry(serde_yaml::Value::String("allowed_groups".to_string()))
-            .or_insert_with(|| serde_yaml::Value::Sequence(groups));
-    }
-    if let Some(token) = discord_token_legacy.filter(|v| !v.trim().is_empty()) {
-        let discord = ensure_channel_mapping(cfg, "discord");
-        discord.insert(
-            serde_yaml::Value::String("bot_token".to_string()),
-            serde_yaml::Value::String(token),
-        );
-    }
-    if !discord_allowed_channels_legacy.is_empty() {
-        let discord = ensure_channel_mapping(cfg, "discord");
-        let channels = discord_allowed_channels_legacy
-            .iter()
-            .map(|v| serde_yaml::Value::Number(serde_yaml::Number::from(*v)))
-            .collect::<Vec<_>>();
-        discord
-            .entry(serde_yaml::Value::String("allowed_channels".to_string()))
-            .or_insert_with(|| serde_yaml::Value::Sequence(channels));
-    }
-    if cfg.discord_no_mention {
-        let discord = ensure_channel_mapping(cfg, "discord");
-        discord
-            .entry(serde_yaml::Value::String("no_mention".to_string()))
-            .or_insert_with(|| serde_yaml::Value::Bool(true));
-    }
-
-    let channels_to_migrate: [(&str, &[&str]); 4] = [
-        (
-            "telegram",
-            &["bot_token", "bot_username", "allowed_groups", "no_mention"],
-        ),
-        (
-            "discord",
-            &[
-                "bot_token",
-                "bot_username",
-                "allowed_channels",
-                "no_mention",
-            ],
-        ),
+    let channels_to_migrate: [(&str, &[&str]); 2] = [
         (
             "slack",
             &["bot_token", "app_token", "bot_username", "allowed_channels"],
@@ -365,15 +286,6 @@ fn migrate_channels_to_accounts(cfg: &mut Config) -> usize {
         let default_account = channel_default_account_id(channel_map);
         if migrate_channel_accounts(channel_map, keys, &default_account) {
             changed += 1;
-            if channel_name == "telegram" {
-                cfg.telegram_bot_token.clear();
-                cfg.allowed_groups.clear();
-            }
-            if channel_name == "discord" {
-                cfg.discord_bot_token = None;
-                cfg.discord_allowed_channels.clear();
-                cfg.discord_no_mention = false;
-            }
         }
     }
 
@@ -1515,98 +1427,29 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_channels_to_accounts_telegram_and_discord() {
-        let mut cfg = Config::test_defaults();
-        cfg.telegram_bot_token = "tg_token".to_string();
-        cfg.bot_username = "tg_bot".to_string();
-        cfg.allowed_groups = vec![1, 2];
-        cfg.discord_bot_token = Some("dc_token".to_string());
-        cfg.discord_allowed_channels = vec![10, 20];
-        cfg.discord_no_mention = true;
-        cfg.channels.clear();
-
-        let changed = migrate_channels_to_accounts(&mut cfg);
-        assert_eq!(changed, 2);
-
-        let telegram = cfg.channels.get("telegram").unwrap();
-        let telegram_default = telegram
-            .get("default_account")
-            .and_then(|v| v.as_str())
-            .unwrap();
-        assert_eq!(telegram_default, "main");
-        let telegram_account = telegram
-            .get("accounts")
-            .and_then(|v| v.get("main"))
-            .unwrap();
-        assert_eq!(
-            telegram_account
-                .get("bot_token")
-                .and_then(|v| v.as_str())
-                .unwrap(),
-            "tg_token"
-        );
-        assert_eq!(
-            telegram_account
-                .get("bot_username")
-                .and_then(|v| v.as_str())
-                .unwrap(),
-            "tg_bot"
-        );
-        assert!(telegram_account
-            .get("allowed_groups")
-            .and_then(|v| v.as_sequence())
-            .is_some());
-
-        let discord = cfg.channels.get("discord").unwrap();
-        let discord_account = discord.get("accounts").and_then(|v| v.get("main")).unwrap();
-        assert_eq!(
-            discord_account
-                .get("bot_token")
-                .and_then(|v| v.as_str())
-                .unwrap(),
-            "dc_token"
-        );
-        assert!(discord_account
-            .get("allowed_channels")
-            .and_then(|v| v.as_sequence())
-            .is_some());
-        assert!(discord_account
-            .get("no_mention")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false));
-
-        assert!(cfg.telegram_bot_token.is_empty());
-        assert!(cfg.discord_bot_token.is_none());
-        assert!(cfg.allowed_groups.is_empty());
-        assert!(cfg.discord_allowed_channels.is_empty());
-        assert!(!cfg.discord_no_mention);
-    }
-
-    #[test]
     fn test_migrate_channels_to_accounts_is_idempotent() {
         let mut cfg = Config::test_defaults();
         cfg.channels = serde_yaml::from_str(
             r#"
-telegram:
+feishu:
   enabled: true
   default_account: "ops"
   accounts:
     ops:
       enabled: true
-      bot_token: "already"
+      app_id: "already"
 "#,
         )
         .unwrap();
-        cfg.telegram_bot_token = String::new();
 
         let changed = migrate_channels_to_accounts(&mut cfg);
         assert_eq!(changed, 0);
-        let telegram = cfg.channels.get("telegram").unwrap();
+        let feishu = cfg.channels.get("feishu").unwrap();
         assert_eq!(
-            telegram
+            feishu
                 .get("accounts")
                 .and_then(|v| v.get("ops"))
-                .and_then(|v| v.get("bot_token"))
+                .and_then(|v| v.get("app_id"))
                 .and_then(|v| v.as_str()),
             Some("already")
         );

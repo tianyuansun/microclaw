@@ -5,8 +5,6 @@ use microclaw::config::{Config, WorkingDirIsolation};
 /// Helper to create a minimal valid config for testing.
 fn minimal_config() -> Config {
     Config {
-        telegram_bot_token: "tok".into(),
-        bot_username: "testbot".into(),
         llm_provider: "anthropic".into(),
         api_key: "test-key".into(),
         model: String::new(),
@@ -32,9 +30,6 @@ fn minimal_config() -> Config {
         tool_timeout_overrides: std::collections::HashMap::new(),
         default_mcp_request_timeout_secs: 120,
         compaction_timeout_secs: 180,
-        discord_bot_token: None,
-        discord_allowed_channels: vec![],
-        discord_no_mention: false,
         allow_group_slash_without_mention: false,
         show_thinking: false,
         openai_compat_body_overrides: std::collections::HashMap::new(),
@@ -66,16 +61,17 @@ fn minimal_config() -> Config {
         plugins: microclaw::plugins::PluginsConfig::default(),
         voice_provider: "openai".into(),
         voice_transcription_command: None,
+        send_progress: false,
+        send_tool_hints: false,
         channels: std::collections::HashMap::new(),
+        bot_username: "testbot".into(),
     }
 }
 
 #[test]
 fn test_yaml_parse_minimal() {
-    let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+    let yaml = "api_key: key\n";
     let config: Config = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(config.telegram_bot_token, "tok");
-    assert_eq!(config.bot_username, "bot");
     assert_eq!(config.api_key, "key");
     // Defaults
     assert_eq!(config.llm_provider, "anthropic");
@@ -97,7 +93,6 @@ fn test_yaml_parse_minimal() {
 #[test]
 fn test_yaml_parse_full() {
     let yaml = r#"
-telegram_bot_token: my_token
 bot_username: mybot
 llm_provider: openai
 api_key: sk-test123
@@ -117,13 +112,9 @@ control_chat_ids:
   - 999
 max_session_messages: 60
 compact_keep_recent: 30
-discord_bot_token: discord_tok
-discord_allowed_channels:
-  - 333
-  - 444
 "#;
     let config: Config = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(config.telegram_bot_token, "my_token");
+    assert_eq!(config.bot_username, "mybot");
     assert_eq!(config.llm_provider, "openai");
     assert_eq!(config.model, "gpt-4o");
     assert_eq!(
@@ -141,7 +132,6 @@ discord_allowed_channels:
     assert_eq!(config.control_chat_ids, vec![999]);
     assert_eq!(config.max_session_messages, 60);
     assert_eq!(config.compact_keep_recent, 30);
-    assert_eq!(config.discord_allowed_channels, vec![333, 444]);
 }
 
 #[test]
@@ -149,7 +139,6 @@ fn test_yaml_roundtrip() {
     let config = minimal_config();
     let yaml = serde_yaml::to_string(&config).unwrap();
     let parsed: Config = serde_yaml::from_str(&yaml).unwrap();
-    assert_eq!(parsed.telegram_bot_token, config.telegram_bot_token);
     assert_eq!(parsed.api_key, config.api_key);
     assert_eq!(parsed.max_tokens, config.max_tokens);
     assert_eq!(parsed.timezone, config.timezone);
@@ -169,21 +158,20 @@ fn test_data_dir_paths() {
 
 #[test]
 fn test_yaml_unknown_fields_ignored() {
-    let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nunknown_field: value\n";
+    let yaml = "api_key: key\nunknown_field: value\n";
     // serde_yaml should not fail on unknown fields by default
     let config: Result<Config, _> = serde_yaml::from_str(yaml);
     // This may fail or succeed depending on serde config; verify behavior
     if let Ok(c) = config {
-        assert_eq!(c.telegram_bot_token, "tok");
+        assert_eq!(c.api_key, "key");
     }
     // If it errors, that's also acceptable behavior (strict mode)
 }
 
 #[test]
 fn test_yaml_empty_string_fields() {
-    let yaml = "telegram_bot_token: ''\nbot_username: ''\napi_key: ''\n";
+    let yaml = "bot_username: ''\napi_key: ''\n";
     let config: Config = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(config.telegram_bot_token, "");
     assert_eq!(config.bot_username, "");
     assert_eq!(config.api_key, "");
 }

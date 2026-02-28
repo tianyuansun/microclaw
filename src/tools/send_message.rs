@@ -78,7 +78,7 @@ impl Tool for SendMessageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "send_message".into(),
-            description: "Send a message mid-conversation. Supports text for all channels, and attachments for Telegram/Discord/Slack via attachment_path.".into(),
+            description: "Send a message mid-conversation. Supports text for all channels, and attachments for Feishu via attachment_path.".into(),
             input_schema: schema_object(
                 json!({
                     "chat_id": {
@@ -372,17 +372,17 @@ mod tests {
     async fn test_send_message_uses_channel_account_sender_name() {
         let (db, dir) = test_db();
         let chat_id = db
-            .resolve_or_create_chat_id("telegram.sales", "9001", Some("sales"), "private")
+            .resolve_or_create_chat_id("feishu.sales", "9001", Some("sales"), "private")
             .unwrap();
 
         let mut registry = ChannelRegistry::new();
         registry.register(Arc::new(LocalOnlyAdapter {
-            name: "telegram.sales".to_string(),
+            name: "feishu.sales".to_string(),
         }));
         let registry = Arc::new(registry);
 
         let mut channel_usernames = std::collections::HashMap::new();
-        channel_usernames.insert("telegram.sales".to_string(), "sales_bot".to_string());
+        channel_usernames.insert("feishu.sales".to_string(), "sales_bot".to_string());
         let tool = SendMessageTool::new(
             registry,
             db.clone(),
@@ -411,28 +411,14 @@ mod tests {
     async fn test_send_message_web_caller_cross_chat_denied() {
         let (db, dir) = test_db();
         db.upsert_chat(100, Some("web-main"), "web").unwrap();
-        db.upsert_chat(200, Some("tg"), "private").unwrap();
+        db.upsert_chat(200, Some("feishu"), "private").unwrap();
 
-        // Need telegram adapter registered for "private" chat type
         let mut registry = ChannelRegistry::new();
         registry.register(Arc::new(WebAdapter));
-        // Register a minimal telegram adapter to resolve "private" chat type
-        use crate::channels::telegram::TelegramChannelConfig;
-        use crate::channels::TelegramAdapter;
-        let tg_adapter = TelegramAdapter::new(
-            "telegram".into(),
-            teloxide::Bot::new("123456:TEST_TOKEN"),
-            TelegramChannelConfig {
-                bot_token: "123456:TEST_TOKEN".into(),
-                bot_username: "bot".into(),
-                allowed_groups: vec![],
-                allowed_user_ids: vec![],
-                model: None,
-                accounts: std::collections::HashMap::new(),
-                default_account: None,
-            },
-        );
-        registry.register(Arc::new(tg_adapter));
+        // Register a minimal feishu adapter to resolve "private" chat type
+        registry.register(Arc::new(LocalOnlyAdapter {
+            name: "feishu".to_string(),
+        }));
         let registry = Arc::new(registry);
 
         let tool =

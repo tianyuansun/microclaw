@@ -14,9 +14,6 @@ pub use microclaw_tools::types::WorkingDirIsolation;
 use microclaw_tools::web_content_validation::WebContentValidationConfig;
 use microclaw_tools::web_fetch::WebFetchUrlValidationConfig;
 
-fn default_telegram_bot_token() -> String {
-    String::new()
-}
 fn default_bot_username() -> String {
     String::new()
 }
@@ -259,12 +256,6 @@ pub struct Config {
     pub timezone: String,
     #[serde(default = "default_control_chat_ids")]
     pub control_chat_ids: Vec<i64>,
-    #[serde(default)]
-    pub discord_bot_token: Option<String>,
-    #[serde(default)]
-    pub discord_allowed_channels: Vec<u64>,
-    #[serde(default)]
-    pub discord_no_mention: bool,
     #[serde(default = "default_allow_group_slash_without_mention")]
     pub allow_group_slash_without_mention: bool,
 
@@ -348,15 +339,12 @@ pub struct Config {
     pub send_tool_hints: bool,
 
     // --- Channel registry (new dynamic config) ---
-    /// Per-channel configuration. Keys are channel names (e.g. "telegram", "discord", "slack", "irc", "web").
+    /// Per-channel configuration. Keys are channel names (e.g. "feishu", "web").
     /// Each value is channel-specific config deserialized by the adapter.
-    /// If empty, synthesized from legacy flat fields below in post_deserialize().
     #[serde(default)]
     pub channels: HashMap<String, serde_yaml::Value>,
 
     // --- Legacy channel fields (deprecated, use `channels:` instead) ---
-    #[serde(default = "default_telegram_bot_token")]
-    pub telegram_bot_token: String,
     #[serde(default = "default_bot_username")]
     pub bot_username: String,
     #[serde(default)]
@@ -486,7 +474,6 @@ impl Config {
     #[cfg(test)]
     pub(crate) fn test_defaults() -> Self {
         Self {
-            telegram_bot_token: "tok".into(),
             bot_username: "bot".into(),
             llm_provider: "anthropic".into(),
             api_key: "key".into(),
@@ -513,9 +500,6 @@ impl Config {
             default_tool_timeout_secs: default_tool_timeout_secs(),
             tool_timeout_overrides: HashMap::new(),
             default_mcp_request_timeout_secs: default_mcp_request_timeout_secs(),
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
             allow_group_slash_without_mention: false,
             show_thinking: false,
             openai_compat_body_overrides: HashMap::new(),
@@ -546,6 +530,8 @@ impl Config {
             voice_provider: "openai".into(),
             voice_transcription_command: None,
             channels: HashMap::new(),
+            send_progress: false,
+            send_tool_hints: false,
         }
     }
 
@@ -611,16 +597,6 @@ impl Config {
 
     fn inferred_channel_enabled(&self, channel: &str) -> bool {
         match channel {
-            "telegram" => {
-                !self.telegram_bot_token.trim().is_empty() || self.channels.contains_key("telegram")
-            }
-            "discord" => {
-                self.discord_bot_token
-                    .as_deref()
-                    .map(|v| !v.trim().is_empty())
-                    .unwrap_or(false)
-                    || self.channels.contains_key("discord")
-            }
             "web" => self.web_enabled || self.channels.contains_key("web"),
             _ => self.channels.contains_key(channel),
         }
@@ -854,32 +830,6 @@ impl Config {
 
         // Synthesize `channels` map from legacy flat fields if empty
         if self.channels.is_empty() {
-            if !self.telegram_bot_token.trim().is_empty() {
-                self.channels.insert(
-                    "telegram".into(),
-                    serde_yaml::to_value(serde_json::json!({
-                        "enabled": true,
-                        "bot_token": self.telegram_bot_token,
-                        "bot_username": self.bot_username,
-                        "allowed_groups": self.allowed_groups,
-                    }))
-                    .unwrap(),
-                );
-            }
-            if let Some(ref token) = self.discord_bot_token {
-                if !token.trim().is_empty() {
-                    self.channels.insert(
-                        "discord".into(),
-                        serde_yaml::to_value(serde_json::json!({
-                            "enabled": true,
-                            "bot_token": token,
-                            "allowed_channels": self.discord_allowed_channels,
-                            "no_mention": self.discord_no_mention,
-                        }))
-                        .unwrap(),
-                    );
-                }
-            }
             if self.web_enabled {
                 self.channels.insert(
                     "web".into(),
@@ -895,38 +845,15 @@ impl Config {
         }
 
         // Validate required fields
-        let configured_telegram =
-            !self.telegram_bot_token.trim().is_empty() || self.channels.contains_key("telegram");
-        let configured_discord = self
-            .discord_bot_token
-            .as_deref()
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-            || self.channels.contains_key("discord");
-        let configured_slack = self.channels.contains_key("slack");
-        let configured_feishu = self.channels.contains_key("feishu");
-        let configured_matrix = self.channels.contains_key("matrix");
-        let configured_irc = self.channels.contains_key("irc");
         let configured_web = self.web_enabled || self.channels.contains_key("web");
+        let configured_feishu = self.channels.contains_key("feishu");
 
-        let has_telegram = self.channel_enabled("telegram") && configured_telegram;
-        let has_discord = self.channel_enabled("discord") && configured_discord;
-        let has_slack = self.channel_enabled("slack") && configured_slack;
-        let has_feishu = self.channel_enabled("feishu") && configured_feishu;
-        let has_matrix = self.channel_enabled("matrix") && configured_matrix;
-        let has_irc = self.channel_enabled("irc") && configured_irc;
         let has_web = self.channel_enabled("web") && configured_web;
+        let has_feishu = self.channel_enabled("feishu") && configured_feishu;
 
-        if !(has_telegram
-            || has_discord
-            || has_slack
-            || has_feishu
-            || has_matrix
-            || has_irc
-            || has_web)
-        {
+        if !(has_web || has_feishu) {
             return Err(MicroClawError::Config(
-                "At least one channel must be enabled and configured (via channels.<name>.enabled or legacy channel settings)".into(),
+                "At least one channel must be enabled and configured (web or feishu)".into(),
             ));
         }
         if self.api_key.is_empty() && !provider_allows_empty_api_key(&self.llm_provider) {
@@ -1045,7 +972,7 @@ mod tests {
 
     #[test]
     fn test_clawhub_config_defaults() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.clawhub.registry, "https://clawhub.ai");
         assert!(config.clawhub.agent_tools_enabled);
@@ -1053,7 +980,7 @@ mod tests {
 
     #[test]
     fn test_voice_config_defaults() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.voice_provider, "openai");
         assert!(config.voice_transcription_command.is_none());
@@ -1062,9 +989,9 @@ mod tests {
     #[test]
     fn test_voice_config_local_provider() {
         let yaml = r#"
-telegram_bot_token: tok
 bot_username: bot
 api_key: key
+web_enabled: true
 voice_provider: "local"
 voice_transcription_command: "whisper-mlx --file {file}"
 "#;
@@ -1084,7 +1011,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
     fn test_config_struct_clone_and_debug() {
         let config = test_config();
         let cloned = config.clone();
-        assert_eq!(cloned.telegram_bot_token, "tok");
+        assert_eq!(cloned.bot_username, "bot");
         assert_eq!(cloned.max_tokens, 8192);
         assert_eq!(cloned.max_tool_iterations, 100);
         assert_eq!(cloned.max_history_messages, 50);
@@ -1099,8 +1026,6 @@ voice_transcription_command: "whisper-mlx --file {file}"
         assert_eq!(cloned.default_tool_timeout_secs, 30);
         assert!(cloned.tool_timeout_overrides.is_empty());
         assert_eq!(cloned.default_mcp_request_timeout_secs, 120);
-        assert!(cloned.discord_bot_token.is_none());
-        assert!(cloned.discord_allowed_channels.is_empty());
         let _ = format!("{:?}", config);
     }
 
@@ -1126,14 +1051,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
         let config = test_config();
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: Config = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(parsed.telegram_bot_token, "tok");
+        assert_eq!(parsed.bot_username, "bot");
         assert_eq!(parsed.max_tokens, 8192);
         assert_eq!(parsed.llm_provider, "anthropic");
     }
 
     #[test]
     fn test_config_yaml_defaults() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.llm_provider, "anthropic");
         assert_eq!(config.max_tokens, 8192);
@@ -1211,14 +1136,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_default_data_dir_uses_microclaw_home() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(config.data_dir.ends_with(".microclaw"));
     }
 
     #[test]
     fn test_config_sandbox_defaults_to_off() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(config.sandbox.mode, SandboxMode::Off));
         assert!(matches!(config.sandbox.backend, SandboxBackend::Auto));
@@ -1227,7 +1152,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_post_deserialize_empty_working_dir_uses_default() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nworking_dir: '  '\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nworking_dir: '  '\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert!(std::path::PathBuf::from(&config.working_dir)
@@ -1237,7 +1162,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
     #[test]
     fn test_post_deserialize_zero_memory_budget_uses_default() {
         let yaml =
-            "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nmemory_token_budget: 0\n";
+            "bot_username: bot\napi_key: key\nweb_enabled: true\nmemory_token_budget: 0\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.memory_token_budget, 1500);
@@ -1245,7 +1170,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_working_dir_isolation_defaults_to_chat() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.working_dir_isolation,
@@ -1255,7 +1180,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_working_dir_isolation_accepts_chat() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nworking_dir_isolation: chat\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nworking_dir_isolation: chat\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.working_dir_isolation,
@@ -1265,7 +1190,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_working_dir_isolation_accepts_true() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nworking_dir_isolation: true\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nworking_dir_isolation: true\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.working_dir_isolation,
@@ -1275,7 +1200,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_working_dir_isolation_accepts_false() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nworking_dir_isolation: false\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nworking_dir_isolation: false\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.working_dir_isolation,
@@ -1285,14 +1210,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_high_risk_tool_user_confirmation_required_defaults_true() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(config.high_risk_tool_user_confirmation_required);
     }
 
     #[test]
     fn test_high_risk_tool_user_confirmation_required_accepts_false() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nhigh_risk_tool_user_confirmation_required: false\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nhigh_risk_tool_user_confirmation_required: false\n";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(!config.high_risk_tool_user_confirmation_required);
     }
@@ -1300,7 +1225,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
     #[test]
     fn test_config_post_deserialize() {
         let yaml =
-            "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nllm_provider: ANTHROPIC\n";
+            "bot_username: bot\napi_key: key\nweb_enabled: true\nllm_provider: ANTHROPIC\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.llm_provider, "anthropic");
@@ -1350,7 +1275,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
     #[test]
     fn test_post_deserialize_invalid_timezone() {
         let yaml =
-            "telegram_bot_token: tok\nbot_username: bot\napi_key: key\ntimezone: Mars/Olympus\n";
+            "bot_username: bot\napi_key: key\nweb_enabled: true\ntimezone: Mars/Olympus\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1359,7 +1284,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_post_deserialize_missing_api_key() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\n";
+        let yaml = "bot_username: bot\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1389,7 +1314,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
         std::env::set_var("CODEX_HOME", &auth_dir);
 
         let yaml =
-            "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\nmodel: gpt-5.3-codex\n";
+            "bot_username: bot\nllm_provider: openai-codex\nmodel: gpt-5.3-codex\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
 
@@ -1418,70 +1343,35 @@ voice_transcription_command: "whisper-mlx --file {file}"
     }
 
     #[test]
-    fn test_post_deserialize_discord_only() {
-        let yaml = "bot_username: bot\napi_key: key\ndiscord_bot_token: discord_tok\n";
-        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
-        // Should succeed: discord_bot_token is set even though telegram_bot_token is empty
-        config.post_deserialize().unwrap();
-    }
-
-    #[test]
-    fn test_post_deserialize_irc_only() {
+    fn test_post_deserialize_feishu_only() {
         let yaml = r##"
 api_key: key
 channels:
-  irc:
+  feishu:
     enabled: true
-    server: "irc.example.com"
-    nick: "microclaw"
-    channels: "#microclaw"
+    app_id: "cli_xxx"
+    app_secret: "xxx"
 "##;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
-        assert!(config.channel_enabled("irc"));
-    }
-
-    #[test]
-    fn test_post_deserialize_matrix_only() {
-        let yaml = r##"
-api_key: key
-channels:
-  matrix:
-    enabled: true
-    homeserver_url: "https://matrix.example.com"
-    access_token: "syt_xxx"
-    bot_user_id: "@microclaw:example.com"
-"##;
-        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
-        config.post_deserialize().unwrap();
-        assert!(config.channel_enabled("matrix"));
-    }
-
-    #[test]
-    fn test_post_deserialize_channel_enabled_flag_overrides_legacy_inference() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\ndiscord_bot_token: discord_tok\napi_key: key\nchannels:\n  telegram:\n    enabled: false\n  discord:\n    enabled: true\n  web:\n    enabled: false\n";
-        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
-        config.post_deserialize().unwrap();
-
-        assert!(!config.channel_enabled("telegram"));
-        assert!(config.channel_enabled("discord"));
-        assert!(!config.channel_enabled("web"));
+        assert!(config.channel_enabled("feishu"));
     }
 
     #[test]
     fn test_post_deserialize_channel_enabled_flag_controls_web() {
         let yaml =
-            "api_key: key\ndiscord_bot_token: discord_tok\nchannels:\n  web:\n    enabled: false\n";
+            "api_key: key\nchannels:\n  web:\n    enabled: false\n  feishu:\n    enabled: true\n    app_id: \"test\"\n    app_secret: \"secret\"\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
 
         assert!(!config.channel_enabled("web"));
+        assert!(config.channel_enabled("feishu"));
     }
 
     #[test]
     fn test_post_deserialize_openai_default_model() {
         let yaml =
-            "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nllm_provider: openai\n";
+            "bot_username: bot\napi_key: key\nweb_enabled: true\nllm_provider: openai\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.model, "gpt-5.2");
@@ -1509,7 +1399,7 @@ channels:
         .unwrap();
         std::env::set_var("CODEX_HOME", &auth_dir);
 
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\n";
+        let yaml = "bot_username: bot\nllm_provider: openai-codex\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
 
@@ -1545,7 +1435,7 @@ channels:
         std::fs::create_dir_all(&auth_dir).unwrap();
         std::env::set_var("CODEX_HOME", &auth_dir);
 
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\n";
+        let yaml = "bot_username: bot\nllm_provider: openai-codex\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1582,7 +1472,7 @@ channels:
         std::fs::create_dir_all(&auth_dir).unwrap();
         std::env::set_var("CODEX_HOME", &auth_dir);
 
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\napi_key: sk-user-stale\n";
+        let yaml = "bot_username: bot\nllm_provider: openai-codex\napi_key: sk-user-stale\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1610,7 +1500,7 @@ channels:
         std::env::remove_var("CODEX_HOME");
         std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", "env-token");
 
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\n";
+        let yaml = "bot_username: bot\nllm_provider: openai-codex\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
 
@@ -1630,7 +1520,7 @@ channels:
 
     #[test]
     fn test_post_deserialize_ollama_default_model_and_empty_key() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: ollama\n";
+        let yaml = "bot_username: bot\nllm_provider: ollama\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.model, "llama3.2");
@@ -1638,7 +1528,7 @@ channels:
 
     #[test]
     fn test_post_deserialize_empty_base_url_becomes_none() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nllm_base_url: '  '\n";
+        let yaml = "bot_username: bot\napi_key: key\nllm_base_url: '  '\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert!(config.llm_base_url.is_none());
@@ -1646,7 +1536,7 @@ channels:
 
     #[test]
     fn test_post_deserialize_provider_case_insensitive() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nllm_provider: '  ANTHROPIC  '\n";
+        let yaml = "bot_username: bot\napi_key: key\nllm_provider: '  ANTHROPIC  '\nweb_enabled: true\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.llm_provider, "anthropic");
@@ -1656,9 +1546,9 @@ channels:
     #[test]
     fn test_post_deserialize_normalizes_openai_compat_body_overrides() {
         let yaml = r#"
-telegram_bot_token: tok
 bot_username: bot
 api_key: key
+web_enabled: true
 openai_compat_body_overrides:
   " temperature ": 0.2
   "  ": 1
@@ -1707,7 +1597,7 @@ openai_compat_body_overrides_by_model:
 
     #[test]
     fn test_post_deserialize_web_non_local_requires_token() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nweb_enabled: true\nweb_host: 0.0.0.0\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nweb_host: 0.0.0.0\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         assert!(err
@@ -1717,7 +1607,7 @@ openai_compat_body_overrides_by_model:
 
     #[test]
     fn test_post_deserialize_web_non_local_with_token_ok() {
-        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\nweb_enabled: true\nweb_host: 0.0.0.0\nweb_auth_token: token123\n";
+        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nweb_host: 0.0.0.0\nweb_auth_token: token123\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.web_auth_token.as_deref(), Some("token123"));
@@ -1726,9 +1616,9 @@ openai_compat_body_overrides_by_model:
     #[test]
     fn test_model_prices_parse_and_estimate() {
         let yaml = r#"
-telegram_bot_token: tok
 bot_username: bot
 api_key: key
+web_enabled: true
 model_prices:
   - model: claude-sonnet-4-5-20250929
     input_per_million_usd: 3.0
@@ -1745,9 +1635,9 @@ model_prices:
     #[test]
     fn test_model_prices_invalid_rejected() {
         let yaml = r#"
-telegram_bot_token: tok
 bot_username: bot
 api_key: key
+web_enabled: true
 model_prices:
   - model: ""
     input_per_million_usd: 1.0
@@ -1763,17 +1653,15 @@ model_prices:
     #[test]
     fn test_config_yaml_with_all_optional_fields() {
         let yaml = r#"
-telegram_bot_token: tok
 bot_username: bot
 api_key: key
+web_enabled: true
 openai_api_key: sk-test
 timezone: US/Eastern
 allowed_groups: [123, 456]
 control_chat_ids: [999]
 max_session_messages: 60
 compact_keep_recent: 30
-discord_bot_token: discord_tok
-discord_allowed_channels: [111, 222]
 "#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
@@ -1783,7 +1671,6 @@ discord_allowed_channels: [111, 222]
         assert_eq!(config.control_chat_ids, vec![999]);
         assert_eq!(config.max_session_messages, 60);
         assert_eq!(config.compact_keep_recent, 30);
-        assert_eq!(config.discord_allowed_channels, vec![111, 222]);
     }
 
     #[test]
@@ -1793,7 +1680,7 @@ discord_allowed_channels: [111, 222]
         let path = dir.join("microclaw_test_config.yaml");
         config.save_yaml(path.to_str().unwrap()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("telegram_bot_token"));
+        assert!(content.contains("bot_username"));
         std::fs::remove_file(path).ok();
     }
 }

@@ -22,8 +22,6 @@ pub mod skills;
 pub mod tools;
 pub mod web;
 
-pub use channels::discord;
-pub use channels::telegram;
 pub use microclaw_app::builtin_skills;
 pub use microclaw_app::logging;
 pub use microclaw_app::transcribe;
