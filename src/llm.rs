@@ -2543,8 +2543,6 @@ mod tests {
         config.data_dir = "/tmp".into();
         config.working_dir = "/tmp".into();
         config.working_dir_isolation = WorkingDirIsolation::Shared;
-        config.web_enabled = false;
-        config.web_port = 3900;
 
         let provider = OpenAiProvider::new(&config);
         assert!(provider.enable_thinking_param);
@@ -2607,8 +2605,6 @@ mod tests {
         config.data_dir = "/tmp".into();
         config.working_dir = "/tmp".into();
         config.working_dir_isolation = WorkingDirIsolation::Shared;
-        config.web_enabled = false;
-        config.web_port = 3900;
         // Should not panic
         let _provider = create_provider(&config);
     }
@@ -2621,8 +2617,6 @@ mod tests {
         config.data_dir = "/tmp".into();
         config.working_dir = "/tmp".into();
         config.working_dir_isolation = WorkingDirIsolation::Shared;
-        config.web_enabled = false;
-        config.web_port = 3900;
         let _provider = create_provider(&config);
     }
 
@@ -2702,8 +2696,6 @@ mod tests {
         config.data_dir = "/tmp".into();
         config.working_dir = "/tmp".into();
         config.working_dir_isolation = WorkingDirIsolation::Shared;
-        config.web_enabled = false;
-        config.web_port = 3900;
         let provider = OpenAiProvider::new(&config);
         let messages = vec![Message {
             role: "user".into(),
@@ -2822,8 +2814,6 @@ mod tests {
         config.data_dir = "/tmp".into();
         config.working_dir = "/tmp".into();
         config.working_dir_isolation = WorkingDirIsolation::Shared;
-        config.web_enabled = false;
-        config.web_port = 3900;
         let provider = OpenAiProvider::new(&config);
         let messages = vec![Message {
             role: "user".into(),

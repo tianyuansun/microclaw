@@ -19,7 +19,6 @@ use crate::memory::MemoryManager;
 use crate::memory_backend::MemoryBackend;
 use crate::skills::SkillManager;
 use crate::tools::ToolRegistry;
-use crate::web::WebAdapter;
 use microclaw_channels::channel_adapter::ChannelRegistry;
 use microclaw_storage::db::Database;
 
@@ -190,13 +189,6 @@ pub async fn run(
         },
     );
 
-    let mut has_web = false;
-
-    if config.channel_enabled("web") {
-        has_web = true;
-        registry.register(Arc::new(WebAdapter));
-    }
-
     let channel_registry = Arc::new(registry);
 
     let memory_backend = Arc::new(MemoryBackend::new(
@@ -275,25 +267,9 @@ pub async fn run(
         );
     }
 
-    if has_web {
-        let web_state = state.clone();
-        info!(
-            "Starting Web UI server on {}:{}",
-            state.config.web_host, state.config.web_port
-        );
-        spawn_guarded("web".to_string(), async move {
-            crate::web::start_web_server(web_state).await;
-        });
-    }
-
-    let has_active_channels = [
-        has_web,
-        has_feishu,
-        has_email,
-        has_dingtalk,
-    ]
-    .into_iter()
-    .any(|v| v);
+    let has_active_channels = [has_feishu, has_email, has_dingtalk]
+        .into_iter()
+        .any(|v| v);
 
     if has_active_channels {
         info!("Runtime active; waiting for Ctrl-C");
@@ -303,7 +279,7 @@ pub async fn run(
         Ok(())
     } else {
         Err(anyhow!(
-            "No channel is enabled. Configure channels.<name>.enabled for Feishu, Email, DingTalk, or web."
+            "No channel is enabled. Configure channels.<name>.enabled for Feishu, Email, or DingTalk."
         ))
     }
 }

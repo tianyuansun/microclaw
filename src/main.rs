@@ -1,5 +1,3 @@
-use argon2::password_hash::{rand_core::OsRng, PasswordHashString, SaltString};
-use argon2::{Argon2, PasswordHasher};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use microclaw::config::Config;
 use microclaw::error::MicroClawError;
@@ -61,8 +59,6 @@ enum MainCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Manage Web UI configurations
-    Web(WebCommand),
     /// Re-embed active memories (requires `sqlite-vec` feature)
     Reembed,
     /// Show version
@@ -82,102 +78,8 @@ struct SetupCommand {
     quiet: bool,
 }
 
-#[derive(Debug, Args)]
-struct WebCommand {
-    #[command(subcommand)]
-    action: Option<WebAction>,
-}
-
-#[derive(Debug, Subcommand)]
-enum WebAction {
-    /// Set the exact new password (min 8 chars)
-    Password { value: String },
-    /// Generate and set a random password
-    PasswordGenerate,
-    /// Clear password hash and revoke sessions (test/reset)
-    PasswordClear,
-}
-
 fn print_version() {
     println!("microclaw {VERSION}");
-}
-
-fn print_web_help() {
-    println!(
-        r#"Manage Web UI Configurations
-
-Usage:
-  microclaw web [password <value> | password-generate | password-clear]
-
-Options:
-  password <value>      Set the exact new password (min 8 chars)
-  password-generate     Generate a random password
-  password-clear        Clear password hash and revoke sessions (test/reset)
-
-Notes:
-  - Existing Web login sessions are revoked automatically.
-  - Restart is not required."#
-    );
-}
-
-fn make_password_hash(password: &str) -> anyhow::Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
-    let hash: PasswordHashString = Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|e| anyhow::anyhow!("password hashing failed: {e}"))?
-        .serialize();
-    Ok(hash.to_string())
-}
-
-fn generate_password() -> String {
-    let rand = uuid::Uuid::new_v4().simple().to_string();
-    format!("mc-{}-{}!", &rand[..6], &rand[6..12])
-}
-
-fn handle_web_cli(action: Option<WebAction>) -> anyhow::Result<()> {
-    if action.is_none() {
-        print_web_help();
-        return Ok(());
-    }
-
-    if matches!(action, Some(WebAction::PasswordClear)) {
-        let config = Config::load()?;
-        let runtime_data_dir = config.runtime_data_dir();
-        let database = db::Database::new(&runtime_data_dir)?;
-        database.clear_auth_password_hash()?;
-        let revoked = database.revoke_all_auth_sessions()?;
-        println!("Web password cleared.");
-        println!("Revoked web sessions: {revoked}");
-        println!(
-            "State is now uninitialized. On next `microclaw start`, default password bootstrap policy will apply."
-        );
-        return Ok(());
-    }
-
-    let (password, generated) = match action {
-        Some(WebAction::PasswordGenerate) => (generate_password(), true),
-        Some(WebAction::Password { value }) => (value, false),
-        Some(WebAction::PasswordClear) => unreachable!("handled above"),
-        None => unreachable!("handled above"),
-    };
-    let normalized = password.trim().to_string();
-    if normalized.len() < 8 {
-        anyhow::bail!("password must be at least 8 chars");
-    }
-
-    let config = Config::load()?;
-    let runtime_data_dir = config.runtime_data_dir();
-    let database = db::Database::new(&runtime_data_dir)?;
-    let hash = make_password_hash(&normalized)?;
-    database.upsert_auth_password_hash(&hash)?;
-    let revoked = database.revoke_all_auth_sessions()?;
-
-    println!("Web password reset successfully.");
-    println!("Revoked web sessions: {revoked}");
-    if generated {
-        println!("Generated password: {normalized}");
-    }
-    Ok(())
 }
 
 fn move_path(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -405,10 +307,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(MainCommand::Doctor { args }) => {
             doctor::run_cli(&args)?;
-            return Ok(());
-        }
-        Some(MainCommand::Web(web)) => {
-            handle_web_cli(web.action)?;
             return Ok(());
         }
         Some(MainCommand::Skill { args }) => {

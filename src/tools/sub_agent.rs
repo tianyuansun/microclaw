@@ -226,8 +226,6 @@ mod tests {
         cfg.data_dir = "/tmp".into();
         cfg.working_dir = "/tmp".into();
         cfg.working_dir_isolation = WorkingDirIsolation::Shared;
-        cfg.web_enabled = false;
-        cfg.web_port = 3900;
         cfg
     }
 

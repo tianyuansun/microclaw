@@ -885,14 +885,29 @@ impl Tool for GetTaskHistoryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::web::WebAdapter;
+    use microclaw_channels::channel::ConversationKind;
+    use microclaw_channels::channel_adapter::ChannelAdapter;
     use microclaw_channels::channel_adapter::ChannelRegistry;
     use microclaw_storage::db::Database;
     use serde_json::json;
 
+    // Mock adapter for testing
+    struct MockAdapter;
+
+    #[async_trait::async_trait]
+    impl ChannelAdapter for MockAdapter {
+        fn name(&self) -> &str { "mock" }
+        fn chat_type_routes(&self) -> Vec<(&str, ConversationKind)> {
+            vec![("mock_private", ConversationKind::Private)]
+        }
+        async fn send_text(&self, _external_chat_id: &str, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     fn test_registry() -> Arc<ChannelRegistry> {
         let mut registry = ChannelRegistry::new();
-        registry.register(Arc::new(WebAdapter));
+        registry.register(Arc::new(MockAdapter));
         Arc::new(registry)
     }
 
@@ -1355,31 +1370,6 @@ mod tests {
             .await;
         assert!(result.is_error);
         assert!(result.content.contains("Permission denied"));
-        cleanup(&dir);
-    }
-
-    #[tokio::test]
-    async fn test_web_caller_schedule_cross_chat_denied_even_for_control_chat() {
-        let (db, dir) = test_db();
-        db.upsert_chat(100, Some("web-main"), "web").unwrap();
-        db.upsert_chat(200, Some("other"), "private").unwrap();
-        let tool = ScheduleTaskTool::new(test_registry(), db, "UTC".into());
-        let result = tool
-            .execute(json!({
-                "chat_id": 200,
-                "prompt": "say hi",
-                "schedule_type": "once",
-                "schedule_value": "2099-12-31T23:59:59+00:00",
-                "__microclaw_auth": {
-                    "caller_chat_id": 100,
-                    "control_chat_ids": [100]
-                }
-            }))
-            .await;
-        assert!(result.is_error);
-        assert!(result
-            .content
-            .contains("web chats cannot operate on other chats"));
         cleanup(&dir);
     }
 

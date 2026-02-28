@@ -1,6 +1,6 @@
 # MicroClaw
 
-MicroClaw is a Rust multi-platform chat bot with a channel-agnostic core and platform adapters. It currently supports Feishu/Lark, Web, Email, and DingTalk, and can be extended to more platforms. It provides agentic tool execution, web search, scheduled tasks, and persistent memory. Inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) (TypeScript/WhatsApp), incorporating some of its design ideas.
+MicroClaw is a Rust multi-platform chat bot with a channel-agnostic core and platform adapters. It currently supports Feishu/Lark, Email, and DingTalk, and can be extended to more platforms. It provides agentic tool execution, web search, scheduled tasks, and persistent memory. Inspired by [nanoclaw](https://github.com/gavrielc/nanoclaw/) (TypeScript/WhatsApp), incorporating some of its design ideas.
 
 ## Tech stack
 
@@ -9,7 +9,6 @@ Rust 2021, Tokio, provider-agnostic LLM runtime (Anthropic + OpenAI-compatible),
 ## Directory overview
 
 - `src/` -- Rust source for the bot binary
-- `web/` -- Built-in Web UI (React + Vite). Compiled to `web/dist/` and embedded into the Rust binary via `include_dir!`. This is the chat interface and settings panel served by microclaw itself at runtime.
 - `website/` -- **Separate git repository** (landing page + documentation site). Not part of the microclaw binary. Contains the public-facing marketing site and docs. Changes here have no effect on the bot.
 
 ## Project layout
@@ -23,7 +22,6 @@ Rust 2021, Tokio, provider-agnostic LLM runtime (Anthropic + OpenAI-compatible),
 - `src/runtime.rs` -- app wiring (`AppState`), provider/tool initialization, channel boot
 - `src/agent_engine.rs` -- shared agent loop (`process_with_agent`)
 - `src/llm.rs` -- provider implementations + format translation
-- `src/web.rs` -- web API routes and streaming
 - `src/memory.rs` -- file-memory manager (`runtime/groups/.../AGENTS.md`)
 - `src/scheduler.rs` -- background scheduler + memory reflector loops
 - `src/channels/*.rs` -- Feishu/Email/DingTalk adapters
@@ -41,7 +39,7 @@ Rust 2021, Tokio, provider-agnostic LLM runtime (Anthropic + OpenAI-compatible),
 - **Scheduler**: `tokio::spawn` loop, polls DB for due tasks, calls `process_with_agent` with `override_prompt`
 - **Typing**: spawned task sends typing action every 4s, aborted when response is ready
 - **Path guard**: sensitive paths (.ssh, .aws, .env, credentials, etc.) are blocked in file tools via `path_guard` module
-- **Platform-extensible core**: Feishu/Web/Email/DingTalk adapters reuse `process_with_agent`; new platforms integrate through the same core loop
+- **Platform-extensible core**: Feishu/Email/DingTalk adapters reuse `process_with_agent`; new platforms integrate through the same core loop
 - **SOUL.md**: optional personality file injected into system prompt. Loaded from `soul_path` config, `data_dir/SOUL.md`, or `./SOUL.md`. Per-chat overrides via `data_dir/runtime/groups/{chat_id}/SOUL.md`
 
 ## Build & run

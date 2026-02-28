@@ -259,7 +259,6 @@ impl Tool for SendMessageTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::web::WebAdapter;
     use microclaw_channels::channel::ConversationKind;
     use microclaw_channels::channel_adapter::ChannelAdapter;
     use microclaw_channels::channel_adapter::ChannelRegistry;
@@ -276,9 +275,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // Mock adapter for testing
+    struct MockAdapter;
+
+    #[async_trait::async_trait]
+    impl ChannelAdapter for MockAdapter {
+        fn name(&self) -> &str { "mock" }
+        fn chat_type_routes(&self) -> Vec<(&str, ConversationKind)> {
+            vec![("mock_private", ConversationKind::Private)]
+        }
+        async fn send_text(&self, _external_chat_id: &str, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     fn test_registry() -> Arc<ChannelRegistry> {
         let mut registry = ChannelRegistry::new();
-        registry.register(Arc::new(WebAdapter));
+        registry.register(Arc::new(MockAdapter));
         Arc::new(registry)
     }
 
@@ -339,36 +352,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_message_web_target_writes_to_db() {
-        let (db, dir) = test_db();
-        db.upsert_chat(999, Some("web-main"), "web").unwrap();
-
-        let tool = SendMessageTool::new(
-            test_registry(),
-            db.clone(),
-            "bot".into(),
-            std::collections::HashMap::new(),
-        );
-        let result = tool
-            .execute(json!({
-                "chat_id": 999,
-                "text": "hello web",
-                "__microclaw_auth": {
-                    "caller_chat_id": 999,
-                    "control_chat_ids": []
-                }
-            }))
-            .await;
-        assert!(!result.is_error, "{}", result.content);
-
-        let all = db.get_all_messages(999).unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].content, "hello web");
-        assert!(all[0].is_from_bot);
-        cleanup(&dir);
-    }
-
-    #[tokio::test]
     async fn test_send_message_uses_channel_account_sender_name() {
         let (db, dir) = test_db();
         let chat_id = db
@@ -408,39 +391,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_message_web_caller_cross_chat_denied() {
-        let (db, dir) = test_db();
-        db.upsert_chat(100, Some("web-main"), "web").unwrap();
-        db.upsert_chat(200, Some("feishu"), "private").unwrap();
-
-        let mut registry = ChannelRegistry::new();
-        registry.register(Arc::new(WebAdapter));
-        // Register a minimal feishu adapter to resolve "private" chat type
-        registry.register(Arc::new(LocalOnlyAdapter {
-            name: "feishu".to_string(),
-        }));
-        let registry = Arc::new(registry);
-
-        let tool =
-            SendMessageTool::new(registry, db, "bot".into(), std::collections::HashMap::new());
-        let result = tool
-            .execute(json!({
-                "chat_id": 200,
-                "text": "hello",
-                "__microclaw_auth": {
-                    "caller_chat_id": 100,
-                    "control_chat_ids": [100]
-                }
-            }))
-            .await;
-        assert!(result.is_error);
-        assert!(result
-            .content
-            .contains("web chats cannot operate on other chats"));
-        cleanup(&dir);
-    }
-
-    #[tokio::test]
     async fn test_send_message_requires_text_or_attachment() {
         let (db, dir) = test_db();
         let tool = SendMessageTool::new(
@@ -459,32 +409,6 @@ mod tests {
         assert!(result
             .content
             .contains("Provide text and/or attachment_path"));
-        cleanup(&dir);
-    }
-
-    #[tokio::test]
-    async fn test_send_attachment_non_telegram_rejected_without_network() {
-        let (db, dir) = test_db();
-        db.upsert_chat(999, Some("web-main"), "web").unwrap();
-
-        let attachment = dir.join("sample.txt");
-        std::fs::write(&attachment, "hello").unwrap();
-
-        let tool = SendMessageTool::new(
-            test_registry(),
-            db,
-            "bot".into(),
-            std::collections::HashMap::new(),
-        );
-        let result = tool
-            .execute(json!({
-                "chat_id": 999,
-                "attachment_path": attachment.to_string_lossy(),
-                "caption": "test"
-            }))
-            .await;
-        assert!(result.is_error);
-        assert!(result.content.contains("not supported for web"));
         cleanup(&dir);
     }
 }

@@ -95,30 +95,6 @@ fn default_mcp_request_timeout_secs() -> u64 {
 fn default_control_chat_ids() -> Vec<i64> {
     Vec::new()
 }
-fn default_web_enabled() -> bool {
-    true
-}
-fn default_web_host() -> String {
-    "127.0.0.1".into()
-}
-fn default_web_port() -> u16 {
-    10961
-}
-fn default_web_max_inflight_per_session() -> usize {
-    2
-}
-fn default_web_max_requests_per_window() -> usize {
-    8
-}
-fn default_web_rate_window_seconds() -> u64 {
-    10
-}
-fn default_web_run_history_limit() -> usize {
-    512
-}
-fn default_web_session_idle_ttl_seconds() -> u64 {
-    300
-}
 fn default_allow_group_slash_without_mention() -> bool {
     false
 }
@@ -204,11 +180,6 @@ impl Default for LoggingConfig {
     }
 }
 
-fn is_local_web_host(host: &str) -> bool {
-    let h = host.trim().to_ascii_lowercase();
-    h == "127.0.0.1" || h == "localhost" || h == "::1"
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelPrice {
     pub model: String,
@@ -284,25 +255,7 @@ pub struct Config {
     #[serde(default = "default_allow_group_slash_without_mention")]
     pub allow_group_slash_without_mention: bool,
 
-    // --- Web UI ---
-    #[serde(default = "default_web_enabled")]
-    pub web_enabled: bool,
-    #[serde(default = "default_web_host")]
-    pub web_host: String,
-    #[serde(default = "default_web_port")]
-    pub web_port: u16,
-    #[serde(default)]
-    pub web_auth_token: Option<String>,
-    #[serde(default = "default_web_max_inflight_per_session")]
-    pub web_max_inflight_per_session: usize,
-    #[serde(default = "default_web_max_requests_per_window")]
-    pub web_max_requests_per_window: usize,
-    #[serde(default = "default_web_rate_window_seconds")]
-    pub web_rate_window_seconds: u64,
-    #[serde(default = "default_web_run_history_limit")]
-    pub web_run_history_limit: usize,
-    #[serde(default = "default_web_session_idle_ttl_seconds")]
-    pub web_session_idle_ttl_seconds: u64,
+    // --- Web Fetch ---
     #[serde(default)]
     pub web_fetch_validation: WebContentValidationConfig,
     #[serde(default)]
@@ -534,15 +487,6 @@ impl Config {
             openai_compat_body_overrides: HashMap::new(),
             openai_compat_body_overrides_by_provider: HashMap::new(),
             openai_compat_body_overrides_by_model: HashMap::new(),
-            web_enabled: true,
-            web_host: "127.0.0.1".into(),
-            web_port: 10961,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
             web_fetch_validation: WebContentValidationConfig::default(),
             web_fetch_url_validation: WebFetchUrlValidationConfig::default(),
             model_prices: vec![],
@@ -561,6 +505,7 @@ impl Config {
             channels: HashMap::new(),
             send_progress: false,
             send_tool_hints: false,
+            logging: LoggingConfig::default(),
         }
     }
 
@@ -625,10 +570,7 @@ impl Config {
     }
 
     fn inferred_channel_enabled(&self, channel: &str) -> bool {
-        match channel {
-            "web" => self.web_enabled || self.channels.contains_key("web"),
-            _ => self.channels.contains_key(channel),
-        }
+        self.channels.contains_key(channel)
     }
 
     fn explicit_channel_enabled(&self, channel: &str) -> Option<bool> {
@@ -718,14 +660,6 @@ impl Config {
         if self.sandbox.container_prefix.is_empty() {
             self.sandbox.container_prefix = default_sandbox_container_prefix();
         }
-        if self.web_host.trim().is_empty() {
-            self.web_host = default_web_host();
-        }
-        if let Some(token) = &self.web_auth_token {
-            if token.trim().is_empty() {
-                self.web_auth_token = None;
-            }
-        }
         if let Some(provider) = &self.embedding_provider {
             let p = provider.trim().to_lowercase();
             self.embedding_provider = if p.is_empty() { None } else { Some(p) };
@@ -748,33 +682,6 @@ impl Config {
             if v == 0 {
                 self.embedding_dim = None;
             }
-        }
-        let web_enabled_effective = self
-            .explicit_channel_enabled("web")
-            .unwrap_or(self.web_enabled);
-        if web_enabled_effective
-            && !is_local_web_host(&self.web_host)
-            && self.web_auth_token.is_none()
-        {
-            return Err(MicroClawError::Config(
-                "web_auth_token is required when web channel is enabled and web_host is not local"
-                    .into(),
-            ));
-        }
-        if self.web_max_inflight_per_session == 0 {
-            self.web_max_inflight_per_session = default_web_max_inflight_per_session();
-        }
-        if self.web_max_requests_per_window == 0 {
-            self.web_max_requests_per_window = default_web_max_requests_per_window();
-        }
-        if self.web_rate_window_seconds == 0 {
-            self.web_rate_window_seconds = default_web_rate_window_seconds();
-        }
-        if self.web_run_history_limit == 0 {
-            self.web_run_history_limit = default_web_run_history_limit();
-        }
-        if self.web_session_idle_ttl_seconds == 0 {
-            self.web_session_idle_ttl_seconds = default_web_session_idle_ttl_seconds();
         }
         self.web_fetch_validation.normalize();
         self.web_fetch_url_validation.normalize();
@@ -857,32 +764,14 @@ impl Config {
             }
         }
 
-        // Synthesize `channels` map from legacy flat fields if empty
-        if self.channels.is_empty() {
-            if self.web_enabled {
-                self.channels.insert(
-                    "web".into(),
-                    serde_yaml::to_value(serde_json::json!({
-                        "enabled": true,
-                        "host": self.web_host,
-                        "port": self.web_port,
-                        "auth_token": self.web_auth_token,
-                    }))
-                    .unwrap(),
-                );
-            }
-        }
-
         // Validate required fields
-        let configured_web = self.web_enabled || self.channels.contains_key("web");
-        let configured_feishu = self.channels.contains_key("feishu");
+        let has_any_channel = ["feishu", "email", "dingtalk"]
+            .iter()
+            .any(|ch| self.channel_enabled(ch) && self.channels.contains_key(*ch));
 
-        let has_web = self.channel_enabled("web") && configured_web;
-        let has_feishu = self.channel_enabled("feishu") && configured_feishu;
-
-        if !(has_web || has_feishu) {
+        if !has_any_channel {
             return Err(MicroClawError::Config(
-                "At least one channel must be enabled and configured (web or feishu)".into(),
+                "At least one channel must be enabled and configured (feishu, email, or dingtalk)".into(),
             ));
         }
         if self.api_key.is_empty() && !provider_allows_empty_api_key(&self.llm_provider) {
@@ -999,9 +888,14 @@ mod tests {
         crate::test_support::env_lock()
     }
 
+    /// Minimal valid config YAML with a channel enabled
+    fn minimal_config_yaml() -> &'static str {
+        "bot_username: bot\napi_key: key\nchannels:\n  feishu:\n    app_id: \"test\"\n    app_secret: \"secret\"\n"
+    }
+
     #[test]
     fn test_clawhub_config_defaults() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
+        let yaml = minimal_config_yaml();
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.clawhub.registry, "https://clawhub.ai");
         assert!(config.clawhub.agent_tools_enabled);
@@ -1009,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_voice_config_defaults() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
+        let yaml = minimal_config_yaml();
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.voice_provider, "openai");
         assert!(config.voice_transcription_command.is_none());
@@ -1020,7 +914,10 @@ mod tests {
         let yaml = r#"
 bot_username: bot
 api_key: key
-web_enabled: true
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
 voice_provider: "local"
 voice_transcription_command: "whisper-mlx --file {file}"
 "#;
@@ -1087,7 +984,13 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_yaml_defaults() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.llm_provider, "anthropic");
         assert_eq!(config.max_tokens, 8192);
@@ -1121,6 +1024,11 @@ voice_transcription_command: "whisper-mlx --file {file}"
     #[test]
     fn test_post_deserialize_timeout_defaults_and_overrides() {
         let mut config = test_config();
+        // Add a channel to satisfy validation
+        config.channels.insert(
+            "feishu".to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        );
         config.default_tool_timeout_secs = 0;
         config.default_mcp_request_timeout_secs = 0;
         config.web_fetch_validation.max_scan_bytes = 0;
@@ -1165,14 +1073,26 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_default_data_dir_uses_microclaw_home() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(config.data_dir.ends_with(".microclaw"));
     }
 
     #[test]
     fn test_config_sandbox_defaults_to_off() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(config.sandbox.mode, SandboxMode::Off));
         assert!(matches!(config.sandbox.backend, SandboxBackend::Auto));
@@ -1181,7 +1101,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_post_deserialize_empty_working_dir_uses_default() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nworking_dir: '  '\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+working_dir: '  '
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert!(std::path::PathBuf::from(&config.working_dir)
@@ -1190,8 +1117,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_post_deserialize_zero_memory_budget_uses_default() {
-        let yaml =
-            "bot_username: bot\napi_key: key\nweb_enabled: true\nmemory_token_budget: 0\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+memory_token_budget: 0
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.memory_token_budget, 1500);
@@ -1199,7 +1132,13 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_working_dir_isolation_defaults_to_chat() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.working_dir_isolation,
@@ -1209,7 +1148,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_working_dir_isolation_accepts_chat() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nworking_dir_isolation: chat\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+working_dir_isolation: chat
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.working_dir_isolation,
@@ -1219,7 +1165,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_working_dir_isolation_accepts_true() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nworking_dir_isolation: true\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+working_dir_isolation: true
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.working_dir_isolation,
@@ -1229,7 +1182,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_config_working_dir_isolation_accepts_false() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nworking_dir_isolation: false\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+working_dir_isolation: false
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.working_dir_isolation,
@@ -1239,22 +1199,41 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_high_risk_tool_user_confirmation_required_defaults_true() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(config.high_risk_tool_user_confirmation_required);
     }
 
     #[test]
     fn test_high_risk_tool_user_confirmation_required_accepts_false() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nhigh_risk_tool_user_confirmation_required: false\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+high_risk_tool_user_confirmation_required: false
+"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(!config.high_risk_tool_user_confirmation_required);
     }
 
     #[test]
     fn test_config_post_deserialize() {
-        let yaml =
-            "bot_username: bot\napi_key: key\nweb_enabled: true\nllm_provider: ANTHROPIC\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+llm_provider: ANTHROPIC
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.llm_provider, "anthropic");
@@ -1303,8 +1282,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_post_deserialize_invalid_timezone() {
-        let yaml =
-            "bot_username: bot\napi_key: key\nweb_enabled: true\ntimezone: Mars/Olympus\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+timezone: Mars/Olympus
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1313,7 +1298,12 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_post_deserialize_missing_api_key() {
-        let yaml = "bot_username: bot\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1342,8 +1332,14 @@ voice_transcription_command: "whisper-mlx --file {file}"
         .unwrap();
         std::env::set_var("CODEX_HOME", &auth_dir);
 
-        let yaml =
-            "bot_username: bot\nllm_provider: openai-codex\nmodel: gpt-5.3-codex\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+llm_provider: openai-codex
+model: gpt-5.3-codex
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
 
@@ -1364,7 +1360,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
 
     #[test]
     fn test_post_deserialize_missing_bot_tokens() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: false\n";
+        let yaml = "bot_username: bot\napi_key: key\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1387,20 +1383,30 @@ channels:
     }
 
     #[test]
-    fn test_post_deserialize_channel_enabled_flag_controls_web() {
-        let yaml =
-            "api_key: key\nchannels:\n  web:\n    enabled: false\n  feishu:\n    enabled: true\n    app_id: \"test\"\n    app_secret: \"secret\"\n";
+    fn test_post_deserialize_channel_enabled_flag() {
+        let yaml = r#"api_key: key
+channels:
+  feishu:
+    enabled: true
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
 
-        assert!(!config.channel_enabled("web"));
         assert!(config.channel_enabled("feishu"));
     }
 
     #[test]
     fn test_post_deserialize_openai_default_model() {
-        let yaml =
-            "bot_username: bot\napi_key: key\nweb_enabled: true\nllm_provider: openai\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+llm_provider: openai
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.model, "gpt-5.2");
@@ -1428,7 +1434,13 @@ channels:
         .unwrap();
         std::env::set_var("CODEX_HOME", &auth_dir);
 
-        let yaml = "bot_username: bot\nllm_provider: openai-codex\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+llm_provider: openai-codex
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
 
@@ -1464,7 +1476,13 @@ channels:
         std::fs::create_dir_all(&auth_dir).unwrap();
         std::env::set_var("CODEX_HOME", &auth_dir);
 
-        let yaml = "bot_username: bot\nllm_provider: openai-codex\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+llm_provider: openai-codex
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1501,7 +1519,14 @@ channels:
         std::fs::create_dir_all(&auth_dir).unwrap();
         std::env::set_var("CODEX_HOME", &auth_dir);
 
-        let yaml = "bot_username: bot\nllm_provider: openai-codex\napi_key: sk-user-stale\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+llm_provider: openai-codex
+api_key: sk-user-stale
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         let err = config.post_deserialize().unwrap_err();
         let msg = err.to_string();
@@ -1529,7 +1554,13 @@ channels:
         std::env::remove_var("CODEX_HOME");
         std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", "env-token");
 
-        let yaml = "bot_username: bot\nllm_provider: openai-codex\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+llm_provider: openai-codex
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
 
@@ -1549,7 +1580,13 @@ channels:
 
     #[test]
     fn test_post_deserialize_ollama_default_model_and_empty_key() {
-        let yaml = "bot_username: bot\nllm_provider: ollama\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+llm_provider: ollama
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.model, "llama3.2");
@@ -1557,7 +1594,14 @@ channels:
 
     #[test]
     fn test_post_deserialize_empty_base_url_becomes_none() {
-        let yaml = "bot_username: bot\napi_key: key\nllm_base_url: '  '\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+llm_base_url: '  '
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert!(config.llm_base_url.is_none());
@@ -1565,7 +1609,14 @@ channels:
 
     #[test]
     fn test_post_deserialize_provider_case_insensitive() {
-        let yaml = "bot_username: bot\napi_key: key\nllm_provider: '  ANTHROPIC  '\nweb_enabled: true\n";
+        let yaml = r#"bot_username: bot
+api_key: key
+llm_provider: '  ANTHROPIC  '
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
+"#;
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.llm_provider, "anthropic");
@@ -1577,7 +1628,10 @@ channels:
         let yaml = r#"
 bot_username: bot
 api_key: key
-web_enabled: true
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
 openai_compat_body_overrides:
   " temperature ": 0.2
   "  ": 1
@@ -1625,29 +1679,14 @@ openai_compat_body_overrides_by_model:
     }
 
     #[test]
-    fn test_post_deserialize_web_non_local_requires_token() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nweb_host: 0.0.0.0\n";
-        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
-        let err = config.post_deserialize().unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("web_auth_token is required when web channel is enabled"));
-    }
-
-    #[test]
-    fn test_post_deserialize_web_non_local_with_token_ok() {
-        let yaml = "bot_username: bot\napi_key: key\nweb_enabled: true\nweb_host: 0.0.0.0\nweb_auth_token: token123\n";
-        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
-        config.post_deserialize().unwrap();
-        assert_eq!(config.web_auth_token.as_deref(), Some("token123"));
-    }
-
-    #[test]
     fn test_model_prices_parse_and_estimate() {
         let yaml = r#"
 bot_username: bot
 api_key: key
-web_enabled: true
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
 model_prices:
   - model: claude-sonnet-4-5-20250929
     input_per_million_usd: 3.0
@@ -1666,7 +1705,10 @@ model_prices:
         let yaml = r#"
 bot_username: bot
 api_key: key
-web_enabled: true
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
 model_prices:
   - model: ""
     input_per_million_usd: 1.0
@@ -1684,7 +1726,10 @@ model_prices:
         let yaml = r#"
 bot_username: bot
 api_key: key
-web_enabled: true
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
 openai_api_key: sk-test
 timezone: US/Eastern
 allowed_groups: [123, 456]

@@ -19,7 +19,6 @@ pub mod setup;
 pub mod setup_def;
 pub mod skills;
 pub mod tools;
-pub mod web;
 
 pub use microclaw_app::builtin_skills;
 pub use microclaw_app::logging;

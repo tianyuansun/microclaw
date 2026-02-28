@@ -1329,7 +1329,12 @@ mod tests {
             "microclaw_doctor_test_{}.yaml",
             Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
-        let cfg = Config::test_defaults();
+        let mut cfg = Config::test_defaults();
+        // Add a channel to satisfy validation
+        cfg.channels.insert(
+            "feishu".to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        );
         cfg.save_yaml(path.to_string_lossy().as_ref()).unwrap();
         std::env::set_var("MICROCLAW_CONFIG", &path);
         let report = build_sandbox_report();
@@ -1346,6 +1351,11 @@ mod tests {
             Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
         let mut cfg = Config::test_defaults();
+        // Add a channel to satisfy validation
+        cfg.channels.insert(
+            "feishu".to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        );
         cfg.web_fetch_validation.enabled = true;
         cfg.web_fetch_validation.strict_mode = true;
         cfg.web_fetch_url_validation.enabled = true;
@@ -1373,6 +1383,11 @@ mod tests {
             Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
         let mut cfg = Config::test_defaults();
+        // Add a channel to satisfy validation
+        cfg.channels.insert(
+            "feishu".to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        );
         cfg.web_fetch_url_validation.feed_sync.enabled = true;
         cfg.web_fetch_url_validation.feed_sync.sources.clear();
         cfg.save_yaml(path.to_string_lossy().as_ref()).unwrap();
@@ -1399,6 +1414,11 @@ mod tests {
             Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
         let mut cfg = Config::test_defaults();
+        // Add a channel to satisfy validation
+        cfg.channels.insert(
+            "feishu".to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        );
         cfg.web_fetch_url_validation.feed_sync.enabled = true;
         cfg.web_fetch_url_validation.feed_sync.fail_open = false;
         cfg.web_fetch_url_validation.feed_sync.sources =

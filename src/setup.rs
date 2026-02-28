@@ -3727,6 +3727,10 @@ mod tests {
 llm_provider: "anthropic"
 api_key: "k"
 model: "claude-sonnet-4-5-20250929"
+channels:
+  feishu:
+    app_id: "test"
+    app_secret: "secret"
 sandbox:
   mode: "off"
 "#,
@@ -3768,8 +3772,6 @@ sandbox:
         assert!(s.contains("\nchannels:\n"));
         assert!(s.contains("  feishu:\n"));
         assert!(s.contains("    enabled: true\n"));
-        assert!(s.contains("  web:\n"));
-        assert!(s.contains("    enabled: false\n"));
 
         let _ = fs::remove_file(&yaml_path);
     }

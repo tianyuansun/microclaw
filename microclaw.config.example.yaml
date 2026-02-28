@@ -80,19 +80,17 @@ compact_keep_recent: 20
 # allow_group_slash_without_mention: false
 
 channels:
-  web:
-    enabled: true
-  # feishu:
-  #   enabled: false
-  #   app_id: "cli_xxx"
-  #   app_secret: "xxx"
-  #   connection_mode: "websocket"   # "websocket" (default) or "webhook"
-  #   domain: "feishu"               # "feishu" (China), "lark" (international), or custom URL
-  #   allowed_chats: []
-  #   # Webhook-only settings:
-  #   # webhook_path: "/feishu/events"
-  #   # verification_token: ""
-  #   # encrypt_key: ""
+  feishu:
+    enabled: false
+    app_id: "cli_xxx"
+    app_secret: "xxx"
+    connection_mode: "websocket"   # "websocket" (default) or "webhook"
+    domain: "feishu"               # "feishu" (China), "lark" (international), or custom URL
+    allowed_chats: []
+    # Webhook-only settings:
+    # webhook_path: "/feishu/events"
+    # verification_token: ""
+    # encrypt_key: ""
   # email:
   #   enabled: false
   #   from_address: "bot@example.com"
@@ -100,26 +98,6 @@ channels:
   # dingtalk:
   #   enabled: false
   #   robot_webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxx"
-
-# Local web UI (optional)
-# Channel on/off is controlled by `channels.web.enabled`.
-# Bind address for local web UI
-web_host: "127.0.0.1"
-# Port for local web UI
-web_port: 10961
-# Optional bearer token for Web API/UI.
-# If set, requests must send Authorization: Bearer <token>
-# web_auth_token: ""
-# Max in-flight requests per session
-web_max_inflight_per_session: 2
-# Max requests allowed per session in rate window
-web_max_requests_per_window: 8
-# Rate limit window length (seconds)
-web_rate_window_seconds: 10
-# Buffered SSE event history per run for replay
-web_run_history_limit: 512
-# Idle cleanup TTL for web session quota/locks (seconds)
-web_session_idle_ttl_seconds: 300
 
 # Soul file: defines your bot's personality, voice, values, and behavior.
 # Supports markdown format. If not set, checks data_dir/SOUL.md then ./SOUL.md.

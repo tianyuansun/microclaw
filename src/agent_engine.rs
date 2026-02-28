@@ -2024,7 +2024,6 @@ mod tests {
     use crate::runtime::AppState;
     use crate::skills::SkillManager;
     use crate::tools::ToolRegistry;
-    use crate::web::WebAdapter;
     use microclaw_channels::channel_adapter::ChannelRegistry;
     use microclaw_core::error::MicroClawError;
     use microclaw_core::llm_types::{
@@ -2206,11 +2205,25 @@ mod tests {
         cfg.working_dir = base_dir.join("tmp").to_string_lossy().to_string();
         cfg.working_dir_isolation = WorkingDirIsolation::Shared;
         cfg.high_risk_tool_user_confirmation_required = require_user_confirmation;
-        cfg.web_port = 3900;
         let db = Arc::new(Database::new(runtime_dir.to_str().unwrap()).unwrap());
         let memory_backend = Arc::new(crate::memory_backend::MemoryBackend::local_only(db.clone()));
+
+        // Create a mock adapter for testing
+        #[derive(Clone)]
+        struct MockAdapter;
+        #[async_trait::async_trait]
+        impl microclaw_channels::channel_adapter::ChannelAdapter for MockAdapter {
+            fn name(&self) -> &str { "mock" }
+            fn chat_type_routes(&self) -> Vec<(&str, microclaw_channels::channel::ConversationKind)> {
+                vec![("mock_private", microclaw_channels::channel::ConversationKind::Private)]
+            }
+            async fn send_text(&self, _external_chat_id: &str, _text: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
         let mut registry = ChannelRegistry::new();
-        registry.register(Arc::new(WebAdapter));
+        registry.register(Arc::new(MockAdapter));
         let channel_registry = Arc::new(registry);
         Arc::new(AppState {
             config: cfg.clone(),
@@ -2831,8 +2844,6 @@ mod tests {
         config.model = "test".into();
         config.working_dir = "./tmp".into();
         config.working_dir_isolation = WorkingDirIsolation::Shared;
-        config.web_enabled = false;
-        config.web_port = 0;
 
         let soul = super::load_soul_content(&config, 999);
         assert!(soul.is_some());
@@ -2855,8 +2866,6 @@ mod tests {
         config.model = "test".into();
         config.working_dir = "./tmp".into();
         config.working_dir_isolation = WorkingDirIsolation::Shared;
-        config.web_enabled = false;
-        config.web_port = 0;
 
         let soul = super::load_soul_content(&config, 999);
         assert!(soul.is_some());
