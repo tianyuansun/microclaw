@@ -1750,16 +1750,16 @@ fn format_tool_hint(tool_calls: &[(&str, &serde_json::Value)]) -> String {
         if let Some(val) = display_val {
             match val {
                 serde_json::Value::String(s) => {
-                    if s.len() > 50 {
-                        format!("{}(\"{}…\")", name, &s[..50])
+                    if s.chars().count() > 50 {
+                        format!("{}(\"{}…\")", name, s.chars().take(50).collect::<String>())
                     } else {
                         format!("{}(\"{}\")", name, s)
                     }
                 }
                 _ => {
                     let s = val.to_string();
-                    if s.len() > 50 {
-                        format!("{}({}…)", name, &s[..50])
+                    if s.chars().count() > 50 {
+                        format!("{}({}…)", name, s.chars().take(50).collect::<String>())
                     } else {
                         format!("{}({})", name, s)
                     }

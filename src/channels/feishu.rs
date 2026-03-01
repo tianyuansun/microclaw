@@ -1123,8 +1123,8 @@ fn format_tool_input_summary(name: &str, input: &serde_json::Value) -> String {
             let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
             if cmd.is_empty() {
                 "bash".into()
-            } else if cmd.len() > 200 {
-                format!("bash: {}...", &cmd[..200])
+            } else if cmd.chars().count() > 200 {
+                format!("bash: {}...", cmd.chars().take(200).collect::<String>())
             } else {
                 format!("bash: {}", cmd)
             }
@@ -1168,8 +1168,8 @@ fn format_tool_input_summary(name: &str, input: &serde_json::Value) -> String {
         }
         _ => {
             let compact = serde_json::to_string(input).unwrap_or_default();
-            if compact.len() > 200 {
-                format!("{}: {}...", name, &compact[..200])
+            if compact.chars().count() > 200 {
+                format!("{}: {}...", name, compact.chars().take(200).collect::<String>())
             } else if compact == "{}" || compact == "null" {
                 name.to_string()
             } else {
