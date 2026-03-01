@@ -104,6 +104,17 @@ channels:
 # Per-chat overrides: place SOUL.md in <data_dir>/runtime/groups/<chat_id>/SOUL.md
 # soul_path: "./SOUL.md"
 
+# Web Search configuration
+# web_search:
+#   # SearXNG instance URL (self-hosted or public). Used as primary search engine.
+#   searxng_endpoint: "https://search.example.com"
+#   # Tavily API key for fallback search (https://tavily.com)
+#   tavily_api_key: "tvly-xxx"
+#   # Maximum number of search results (default: 8)
+#   max_results: 8
+#   # Timeout in seconds for search requests (default: 15)
+#   timeout_secs: 15
+
 # Plugin runtime
 # Place plugin manifests in <data_dir>/plugins by default (or set a custom dir below).
 # plugins:

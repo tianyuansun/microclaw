@@ -129,6 +129,9 @@ fn default_send_tool_hints() -> bool {
     true
 }
 
+// Re-export WebSearchConfig from microclaw-tools
+pub use microclaw_tools::web_search::WebSearchConfig;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClawHubConfig {
     /// ClawHub registry URL
@@ -260,6 +263,10 @@ pub struct Config {
     pub web_fetch_validation: WebContentValidationConfig,
     #[serde(default)]
     pub web_fetch_url_validation: WebFetchUrlValidationConfig,
+
+    // --- Web Search ---
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
 
     // --- Embedding ---
     #[serde(default)]
@@ -489,6 +496,7 @@ impl Config {
             openai_compat_body_overrides_by_model: HashMap::new(),
             web_fetch_validation: WebContentValidationConfig::default(),
             web_fetch_url_validation: WebFetchUrlValidationConfig::default(),
+            web_search: WebSearchConfig::default(),
             model_prices: vec![],
             embedding_provider: None,
             embedding_api_key: None,

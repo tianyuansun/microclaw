@@ -113,9 +113,7 @@ impl ToolRegistry {
                 config.web_fetch_validation,
                 config.web_fetch_url_validation.clone(),
             )),
-            Box::new(web_search::WebSearchTool::new(
-                config.tool_timeout_secs("web_search", 15),
-            )),
+            Box::new(web_search::WebSearchTool::new(config.web_search.clone())),
             Box::new(time_math::GetCurrentTimeTool::new(config.timezone.clone())),
             Box::new(time_math::CompareTimeTool::new(config.timezone.clone())),
             Box::new(time_math::CalculateTool::new()),
@@ -260,9 +258,7 @@ impl ToolRegistry {
                 config.web_fetch_validation,
                 config.web_fetch_url_validation.clone(),
             )),
-            Box::new(web_search::WebSearchTool::new(
-                config.tool_timeout_secs("web_search", 15),
-            )),
+            Box::new(web_search::WebSearchTool::new(config.web_search.clone())),
             Box::new(time_math::GetCurrentTimeTool::new(config.timezone.clone())),
             Box::new(time_math::CompareTimeTool::new(config.timezone.clone())),
             Box::new(time_math::CalculateTool::new()),

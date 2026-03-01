@@ -2,20 +2,17 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use super::{schema_object, Tool, ToolResult};
+use crate::config::WebSearchConfig;
 use microclaw_core::llm_types::ToolDefinition;
+use microclaw_tools::web_search;
 
 pub struct WebSearchTool {
-    default_timeout_secs: u64,
+    config: WebSearchConfig,
 }
 
-const MIN_TIMEOUT_SECS: u64 = 1;
-const MAX_TIMEOUT_SECS: u64 = 60;
-
 impl WebSearchTool {
-    pub fn new(default_timeout_secs: u64) -> Self {
-        Self {
-            default_timeout_secs,
-        }
+    pub fn new(config: WebSearchConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -26,19 +23,22 @@ impl Tool for WebSearchTool {
     }
 
     fn definition(&self) -> ToolDefinition {
+        let description = if self.config.searxng_endpoint.is_some() {
+            "Search the web using SearXNG (with Tavily fallback if configured). Returns titles, URLs, and snippets."
+        } else if self.config.tavily_api_key.is_some() {
+            "Search the web using Tavily. Returns titles, URLs, and snippets."
+        } else {
+            "Search the web. Requires searxng_endpoint or tavily_api_key in config."
+        };
+
         ToolDefinition {
             name: "web_search".into(),
-            description: "Search the web using DuckDuckGo. Returns titles, URLs, and snippets."
-                .into(),
+            description: description.into(),
             input_schema: schema_object(
                 json!({
                     "query": {
                         "type": "string",
                         "description": "The search query"
-                    },
-                    "timeout_secs": {
-                        "type": "integer",
-                        "description": "Timeout in seconds (defaults to configured tool timeout budget)"
                     }
                 }),
                 &["query"],
@@ -51,14 +51,13 @@ impl Tool for WebSearchTool {
             Ok(q) => q,
             Err(msg) => return ToolResult::error(msg),
         };
-        let timeout_secs = resolve_timeout_secs(&input, self.default_timeout_secs);
 
-        match microclaw_tools::web_search::search_ddg_with_timeout(&query, timeout_secs).await {
+        match web_search::search(&query, &self.config).await {
             Ok(results) => {
                 if results.is_empty() {
                     ToolResult::success("No results found.".into())
                 } else {
-                    ToolResult::success(results)
+                    ToolResult::success(web_search::format_results(&results))
                 }
             }
             Err(e) => ToolResult::error(format!("Search failed: {e}")),
@@ -78,14 +77,6 @@ fn parse_query(input: &serde_json::Value) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn resolve_timeout_secs(input: &serde_json::Value, default_timeout_secs: u64) -> u64 {
-    input
-        .get("timeout_secs")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(default_timeout_secs)
-        .clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,11 +84,17 @@ mod tests {
 
     #[test]
     fn test_web_search_definition() {
-        let tool = WebSearchTool::new(15);
+        let config = WebSearchConfig {
+            searxng_endpoint: Some("https://search.example.com".into()),
+            tavily_api_key: None,
+            max_results: 8,
+            timeout_secs: 15,
+        };
+        let tool = WebSearchTool::new(config);
         assert_eq!(tool.name(), "web_search");
         let def = tool.definition();
         assert_eq!(def.name, "web_search");
-        assert!(def.description.contains("DuckDuckGo"));
+        assert!(def.description.contains("SearXNG"));
         assert!(def.input_schema["properties"]["query"].is_object());
         let required = def.input_schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "query"));
@@ -105,7 +102,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_missing_query() {
-        let tool = WebSearchTool::new(15);
+        let tool = WebSearchTool::new(WebSearchConfig::default());
         let result = tool.execute(json!({})).await;
         assert!(result.is_error);
         assert!(result.content.contains("Missing required parameter: query"));
@@ -113,7 +110,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_null_query() {
-        let tool = WebSearchTool::new(15);
+        let tool = WebSearchTool::new(WebSearchConfig::default());
         let result = tool.execute(json!({"query": null})).await;
         assert!(result.is_error);
         assert!(result.content.contains("Missing required parameter: query"));
@@ -121,17 +118,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_empty_query() {
-        let tool = WebSearchTool::new(15);
+        let tool = WebSearchTool::new(WebSearchConfig::default());
         let result = tool.execute(json!({"query": "   " })).await;
         assert!(result.is_error);
         assert!(result.content.contains("Missing required parameter: query"));
-    }
-
-    #[test]
-    fn test_resolve_timeout_secs_clamps_bounds() {
-        assert_eq!(resolve_timeout_secs(&json!({"timeout_secs": 0}), 15), 1);
-        assert_eq!(resolve_timeout_secs(&json!({"timeout_secs": 1000}), 15), 60);
-        assert_eq!(resolve_timeout_secs(&json!({"timeout_secs": 5}), 15), 5);
-        assert_eq!(resolve_timeout_secs(&json!({}), 120), 60);
     }
 }
